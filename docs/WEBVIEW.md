@@ -729,7 +729,7 @@ A web UI can use `__BEAMER__` directly, as the `delay` example does in plain Jav
 | `@helpermedia/beamer-react` | Unstyled React components and hooks on top of both | `beamer-api`, `beamer-controls`, React 19.2 or later |
 | `@helpermedia/beamer-svelte` | Unstyled Svelte components and a parameter view on top of both | `beamer-api`, `beamer-controls`, Svelte 5.29 or later |
 
-A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drum-synth`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
+A web UI with controls of its own needs only `beamer-api`. The packages draw nothing: the look of each control stays in the web UI. They are not on npm yet, so an example that uses them (`webview-demo`, `compressor`, `midi-transform`, `drum-synth`, `tuner`) does not work when copied out of this repository. In this repository the examples use them through the bun workspace of the root `package.json`. Vite reads them from their TypeScript sources (the `source` export condition in `vite.config.ts`), so they need no build of their own. Each package has a README with the details.
 
 ### `beamer-api`
 

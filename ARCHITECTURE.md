@@ -161,6 +161,7 @@ beamer/
 │   ├── compressor/          # Dynamics compressor
 │   ├── equalizer/           # 3-band parametric EQ
 │   ├── delay/               # Delay effect with tempo sync
+│   ├── tuner/               # Chromatic tuner with a pitch detector
 │   ├── synthesizer/         # Polyphonic synthesizer with MIDI CC emulation
 │   ├── drum-synth/          # Drum synthesizer with multi-output buses
 │   ├── midi-transform/      # MIDI effect example

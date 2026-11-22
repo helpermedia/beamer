@@ -2,89 +2,90 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-11-16
-**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drum-synth, webview-demo
+**Last Updated:** 2026-11-21
+**Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drum-synth, webview-demo, tuner
 
 ---
 
 ## Feature Coverage Matrix
 
-| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drum Synth | WebView Demo | Notes |
-|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|--------------|-------|
-| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
-| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
-| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Enable toggles, bypass, soft knee |
-| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | Waveform, sync, ratio, the output of each drum |
-| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Feedback, mix, cutoff |
-| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Attack/release smoothing |
-| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default mapping |
-| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
-| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency parameters (kind = "hz") |
-| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
-| | Nested groups (`#[beamer::group]`, `#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Rust code organization only? |
-| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
-| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Frequency display via kind = "hz" |
-| | Note Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Note numbers as names ("C3") via kind = "note_number", middle_c in Config.toml |
-| | Pan Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Stereo position ("L 30", "C", "R 30") via kind = "pan": the pan (WebView Demo), the balance of each drum (drum-synth) |
-| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | Special bypass parameter marker |
-| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
-| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Saved state beyond parameters: read on the audio thread (pan law), a setting of the editor (the drum synth's tab) |
-| | Hand-written `Default` (`no_default`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Covered by docs (REFERENCE.md) and tests; no example needs it |
-| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
-| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
-| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Delay decay, envelope release |
-| | latency_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Lookahead that follows a parameter |
-| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Reset state on activation |
-| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish), delayed by the latency, warm-up |
-| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
-| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
-| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default layout |
-| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono layouts |
-| | Several layouts (`LAYOUTS`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Mono and stereo, mono to stereo (delay), mono sidechain (compressor) |
-| | Wildcard layouts (`Any`, `MATCHED`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
-| | Surround and ambisonic sets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
-| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
-| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | 3 stereo aux buses that start off, a drum routed to any output (drum-synth) |
-| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |
-| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Delay tempo sync |
-| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | Synthesizer voices, drum triggering |
-| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Synth ±2 semitones |
-| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Mod wheel, transform |
-| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | VST3 CC emulation |
-| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Per-note vibrato, transform |
-| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Global vibrato (synthesizer) |
-| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
-| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
-| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | RPN/NRPN (ParameterNumber) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
-| **Editor** (macOS only) | `#[beamer::handler]` (methods) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Bidirectional IPC |
-| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drum-synth) |
-| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per drum (drum-synth) |
-| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drum-synth) |
-| | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Measuring only while the editor is open |
-| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Config.toml editor config |
-| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Prevents white flash |
-| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
-| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
-| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | __BEAMER__.state (pan law), `stateField` as a Svelte store (the tab the drum synth's editor shows) |
-| | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | The drum synth's pads play their drum with `playNote`, which reaches `midi_input()` |
-| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | beginEdit/endEdit |
-| | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
-| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform), outputs with names of their own (drum-synth) |
-| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | Text fields of dials and faders (delay, compressor, midi-transform, drum-synth, WebView Demo) |
-| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drum-synth with `beamer-svelte` instead of `beamer-react` |
-| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Faders, balance sliders, text fields and radio groups for the outputs as Svelte components, a parameter view for the strips' names and the levels' ranges, meters and a `State` field as Svelte stores |
-| | Horizontal slider (`orientation`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | The balance of each drum, a lying slider with the thumb at `position` |
+| Feature Category | Feature | Gain | Compressor | Equalizer | Delay | Synthesizer | MIDI Transform | Drum Synth | WebView Demo | Tuner | Notes |
+|-----------------|---------|------|------------|-----------|-------|-------------|----------------|-------|--------------|-------|-------|
+| **Parameters** | FloatParameter | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Core parameter type |
+| | IntParameter | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Transpose (synthesizer), note/CC numbers (midi-transform) |
+| | BoolParameter | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | Enable toggles, bypass, soft knee, the mute (tuner) |
+| | EnumParameter | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Waveform, sync, ratio, the output of each drum |
+| | Step (`step = 0.1`, `with_step_size`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Snaps every value to the step, shows its decimals, continuous to hosts, arrow keys by whole steps through `_beamer/parameterStepToNormalized` (the tuner's reference) |
+| **Smoothing** | Exponential | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Feedback, mix, cutoff |
+| | Linear | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Attack/release smoothing (compressor), the mute's ramp with a standalone `Smoother` (tuner) |
+| **Range Mapping** | LinearMapper | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Default mapping |
+| | PowerMapper | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Threshold (db_log) |
+| | LogMapper | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Frequency parameters (kind = "hz"): the bands (equalizer), the reference (tuner) |
+| | LogOffsetMapper | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Organization** | Units (parameter groups) | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | VST3 units (works in Cubase, see notes) |
+| | Nested groups (`#[beamer::group]`, `#[nested]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Rust code organization only? |
+| | Flat groups (group = "...") | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Equalizer (3 groups), Synthesizer (4 groups) |
+| | Hz Formatter | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Frequency display via kind = "hz", with the decimals of a step (the tuner's reference, 0.1 Hz) |
+| | Note Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Note numbers as names ("C3") via kind = "note_number", middle_c in Config.toml |
+| | Pan Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Stereo position ("L 30", "C", "R 30") via kind = "pan": the pan (WebView Demo), the balance of each drum (drum-synth) |
+| | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Special bypass parameter marker |
+| | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
+| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Saved state beyond parameters: read on the audio thread (pan law), a setting of the editor (the drum synth's tab) |
+| | Hand-written `Default` (`no_default`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Covered by docs (REFERENCE.md) and tests; no example needs it |
+| **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
+| | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
+| | tail_samples | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Delay decay, envelope release |
+| | latency_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Lookahead that follows a parameter |
+| | set_active | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Reset state on activation |
+| **Bypass** | BypassHandler | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Split API (begin/finish), delayed by the latency, warm-up |
+| | CrossfadeCurve | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Linear curve |
+| | bypass_ramp_samples | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reports ramp to host |
+| **Buses** | Stereo main | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Default layout |
+| | Mono bus | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Mono layouts |
+| | Several layouts (`LAYOUTS`) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | Mono and stereo, mono to stereo (delay), mono sidechain (compressor) |
+| | Wildcard layouts (`Any`, `MATCHED`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
+| | Surround and ambisonic sets | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** in examples, covered by tests |
+| | Sidechain input (AuxInput) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | External key |
+| | Aux output (AuxOutput) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | 3 stereo aux buses that start off, a drum routed to any output (drum-synth) |
+| **Transport** | tempo access | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Used for tempo sync |
+| | is_playing | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | samples_per_beat | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Delay tempo sync |
+| **MIDI - Basic** | NoteOn/NoteOff | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | Synthesizer voices, drum triggering |
+| | PitchBend | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Synth ±2 semitones |
+| | ControlChange (CC) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Mod wheel, transform |
+| | MidiCcConfig | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | VST3 CC emulation |
+| | PolyPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | Per-note vibrato, transform |
+| | ChannelPressure | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Global vibrato (synthesizer) |
+| | ProgramChange | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **MIDI - Advanced** | Note Expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | Keyswitch Controller | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (orchestral) |
+| | Physical UI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** (MPE) |
+| | MPE Support | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Learn | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI Mapping | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | SysEx | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | RPN/NRPN (ParameterNumber) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | 14-bit CC | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | MIDI 2.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| | ChordInfo/ScaleInfo | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **UNTESTED** |
+| **Editor** (macOS only) | `#[beamer::handler]` (methods) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | Bidirectional IPC |
+| | WebViewEventQueue | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | Events from Rust to JS; senders made from it (delay, compressor, midi-transform, drum-synth, tuner) |
+| | WebViewValueSender | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | Output meter from the audio thread, host tempo (delay), meters and sidechain status (compressor), a meter per drum (drum-synth), the pitch the detector heard (tuner) |
+| | WebViewStreamSender | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | Level history from the audio thread, the notes and CCs that pass through (midi-transform), the hits (drum-synth) |
+| | is_editor_open | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | Measuring only while the editor is open (WebView Demo), analyzing the pitch only then (tuner) |
+| | editor_size | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | Config.toml editor config |
+| | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | Prevents white flash |
+| | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
+| | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
+| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | __BEAMER__.state (pan law), `stateField` as a Svelte store (the tab the drum synth's editor shows) |
+| | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | The drum synth's pads play their drum with `playNote`, which reaches `midi_input()` |
+| | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | beginEdit/endEdit |
+| | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
+| | Enum choices (`valueTexts`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | Buttons for sync and stereo mode (delay), ratio (compressor), note and CC modes (midi-transform), outputs with names of their own (drum-synth) |
+| | Typed values (`_beamer/parameterTextToNormalized`) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | Text fields of dials and faders (delay, compressor, midi-transform, drum-synth, tuner, WebView Demo) |
+| | Packages for web UIs (`beamer-api`, `beamer-controls`, `beamer-react`) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | From the bun workspace, read from source by Vite; drum-synth and tuner with `beamer-svelte` instead of `beamer-react`, `fallingLevels` of `beamer-controls` for the meters and the tuner's input level |
+| | Svelte web UI (`beamer-svelte`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | Faders, balance sliders, text fields and radio groups for the outputs as Svelte components, a parameter view for the strips' names and the levels' ranges, meters and a `State` field as Svelte stores (drum-synth); a dial, a switch, a text field and a parameter view (tuner) |
+| | Horizontal slider (`orientation`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | The balance of each drum, a lying slider with the thumb at `position` |
 
 **Legend:**
 - ✅ Tested/Used

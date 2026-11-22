@@ -7,6 +7,6 @@
   "scripts": {
     "build": "bun run --filter './packages/*' build",
     "check": "bun run --filter './packages/*' check",
-    "test": "bun test --conditions=source --conditions=browser packages"
+    "test": "bun test --conditions=source --conditions=browser packages examples"
   }
 }

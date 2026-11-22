@@ -6,7 +6,7 @@ Working Audio Unit and VST plugins built with Beamer. Each one builds as AUv2, A
 
 ## Editors
 
-Five of the examples have a web UI as their editor:
+Six of the examples have a web UI as their editor:
 
 | Example | Editor built with |
 |---------|-------------------|
@@ -14,6 +14,7 @@ Five of the examples have a web UI as their editor:
 | [Delay](#delay) | Plain HTML, CSS and JavaScript, without a build step |
 | [Drum Synth](#drum-synth) | Svelte, Vite and Tailwind |
 | [MIDI Transform](#midi-transform) | React, Vite and Tailwind |
+| [Tuner](#tuner) | Svelte, Vite and Tailwind |
 | [WebView Demo](#webview-demo) | React, Vite and Tailwind |
 
 Gain, Equalizer and Synthesizer have none: hosts show their parameters in a generic view of their own.
@@ -179,6 +180,37 @@ A line with the plugin's name and the Beamer logo, then the delay time in effect
 - A `WebViewValueSender` that sends the host's tempo from the audio thread only when it changes
 - Dials with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/parameterTextToNormalized`)
 - Buttons for the choices of an enum parameter, named by its `valueTexts`
+
+---
+
+### [Tuner](tuner/)
+
+Chromatic tuner from A0 to C8 with an editor in Svelte: a needle on an arc, a strobe band and a reference pitch to set.
+
+**Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Reference** | The pitch of A4 the notes are named by, 400 to 480 Hz in steps of 0.1 Hz: 415 Hz for baroque pitch, 440 Hz the standard, up to 446 Hz in orchestras |
+| **Mute** | Silences the output while tuning, as a pedal tuner does. The input is still measured |
+
+**Editor:**
+
+<p><img src="../docs/screenshots/tuner.png" alt="The editor of Tuner" width="520"></p>
+
+A bar with the plugin's name and the Beamer logo, then the display: a needle on an arc from −50 to +50 cents, the nearest note under it with its octave (A4 is 440 Hz, `middle_c = "C4"`), the frequency and the cents beside the note. Under them a strobe band whose stripes drift right when sharp, left when flat and stand still in tune, then the input level. Within 2 cents the needle, the note and the stripes turn blue. When the note stops the last one stays dimmed for 1.5 seconds, then the display rests and names the reference. Below the display a dial for the reference with its value to type (the arrow keys move it 0.1 Hz) and the mute switch. The editor scales with its window and has the look of the Beamer brand. Built with Svelte, Vite and Tailwind.
+
+**Demonstrates:**
+- Analysis on the audio thread: a pitch detector (the McLeod Pitch Method on a decimated copy of the input, then measured at the full rate), at most one analysis per block whatever its size, about 0.1 to 0.2 ms from 22.05 to 384 kHz, every buffer made in `prepare()`, so `process()` allocates nothing (the allocation check covers it)
+- Work done only while someone looks: the detector analyzes only while the editor is open (`events.is_editor_open()`); the cheap filtering runs always, so a reopened editor shows a pitch at once
+- A value sender with a measurement (frequency, clarity, level), from which the editor works out the note and the cents with the reference, so it follows the reference dial at once, also while the host does not call the plugin
+- A parameter only the editor reads: the reference, saved with the project and shown in the host's generic view
+- A parameter with a step (`step = 0.1`): every value snaps to it and shows its decimals ("442.5 Hz"), while hosts see it as continuous, as `kind = "hz"` maps by log. The dial's arrow keys move it one step at a time, which the plugin works out (`_beamer/parameterStepToNormalized`)
+- A mute that ramps over 10 ms (a standalone `Smoother`), so switching it never clicks
+- `subcategories = ["tools"]` and `middle_c = "C4"` in `Config.toml`
+- `Model::LAYOUTS` with a stereo and a mono layout: the detector hears the mean of the channels
+- Tests of the detector from A0 to C8 at 22.05 to 384 kHz (within 0.1 cent for sines), against noise and samples that are no number, of the plugin (block sizes, the mute, the editor) and of the page's tuning logic with bun
+- The packages for web UIs: `beamer-svelte`'s `Dial` and `Switch` for the reference and the mute, its text field for the typed reference, `beamer-controls` for the falling input level, used from the bun workspace
 
 ---
 

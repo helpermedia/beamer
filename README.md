@@ -39,6 +39,7 @@ This builds the gain example as an AUv3 and a VST3 and installs both. Rescan the
 | **[compressor](https://github.com/helpermedia/beamer/tree/main/examples/compressor)** | Feed-forward compressor with sidechain input, a live transfer curve and meters from the audio thread | React |
 | **[equalizer](https://github.com/helpermedia/beamer/tree/main/examples/equalizer)** | 3-band parametric EQ | - |
 | **[delay](https://github.com/helpermedia/beamer/tree/main/examples/delay)** | Tempo-synced stereo delay with ping-pong mode | Plain HTML and JavaScript |
+| **[tuner](https://github.com/helpermedia/beamer/tree/main/examples/tuner)** | Chromatic tuner from A0 to C8 with a needle, a strobe and a pitch detector on the audio thread | Svelte |
 
 <p><a href="https://github.com/helpermedia/beamer/blob/main/examples/README.md#delay"><img src="docs/screenshots/delay.png" alt="The editor of Delay" width="480"></a></p>
 

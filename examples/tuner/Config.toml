@@ -1,0 +1,14 @@
+name = "Beamer Tuner"
+category = "effect"
+subcategories = ["tools"]
+manufacturer_code = "Bmer"
+plugin_code = "tune"
+vendor = "Beamer Framework"
+url = "https://github.com/helpermedia/beamer"
+email = "support@example.com"
+log_level = "warn"
+editor_size = [520, 360]
+editor_background_color = "#171717"
+# Tuners name notes in scientific pitch notation: A4 is 440 Hz, the low E
+# of a guitar is E2.
+middle_c = "C4"
