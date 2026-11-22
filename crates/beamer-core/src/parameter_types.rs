@@ -40,7 +40,7 @@ use std::borrow::Cow;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-use crate::parameter_format::{Formatter, MiddleC};
+use crate::parameter_format::{step_decimals, Formatter, MiddleC, MAX_STEP_DECIMALS};
 use crate::parameter_groups::{GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID};
 use crate::parameter_info::{ParameterFlags, ParameterInfo, ParameterUnit};
 use crate::parameter_range::{LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper};
@@ -95,22 +95,42 @@ pub trait ParameterRef: Send + Sync {
     /// The normalized value the parameter stores for `normalized`: what
     /// [`get_normalized`](Self::get_normalized) returns after
     /// [`set_normalized`](Self::set_normalized) with it, such as the value
-    /// of the nearest step of a discrete parameter.
+    /// of the nearest step of a discrete parameter or of a float parameter
+    /// with a step.
     ///
     /// The default clamps the value, as a continuous parameter stores it.
     fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
         normalized.clamp(0.0, 1.0)
     }
 
-    /// Whether the parameter stores only its steps, so that
-    /// [`stored_normalized`](Self::stored_normalized) rounds a value to the
-    /// nearest step and the parameter goes from one step to the next
-    /// without a smoother.
+    /// Whether the parameter goes from one step to the next without a
+    /// smoother, as an int, a bool or an enum parameter does.
     ///
     /// A host ramp then changes such a parameter where the ramp reaches the
-    /// next step. The default is `false`, for a continuous parameter.
+    /// next step. A float parameter with a step stores its steps too, but is
+    /// not discrete: its smoother moves between them. The default is
+    /// `false`, for a continuous parameter.
     fn is_discrete(&self) -> bool {
         false
+    }
+
+    /// The step of a float parameter with one, in plain units. `None` for
+    /// one without it or for a discrete parameter, whose steps are its
+    /// choices.
+    fn step_size(&self) -> Option<f64> {
+        None
+    }
+
+    /// The normalized value `steps` steps from `normalized` (up for a
+    /// positive count, down for a negative one), counted from the step
+    /// nearest `normalized` and kept within the range: the next choice of a
+    /// discrete parameter, the next step of a float parameter with one, as
+    /// a control's arrow key moves it. `None` for a continuous parameter.
+    ///
+    /// The default counts the [`step_count`](Self::step_count) steps spread
+    /// evenly over the normalized range, as a discrete parameter has them.
+    fn step_from(&self, normalized: ParameterValue, steps: i32) -> Option<ParameterValue> {
+        step_evenly(normalized, steps, self.step_count())
     }
 
     /// Get the current plain value in natural units.
@@ -563,6 +583,9 @@ pub struct FloatParameter {
     is_db: bool,
     /// Optional step size for discrete stepping. None = continuous.
     step_size: Option<f64>,
+    /// The decimals of the values on the steps, to which a snapped value
+    /// is rounded. Unused without a step.
+    step_decimals: usize,
 }
 
 impl FloatParameter {
@@ -599,6 +622,7 @@ impl FloatParameter {
             smoother: None,
             is_db: false,
             step_size: None,
+            step_decimals: 0,
         }
     }
 
@@ -658,6 +682,7 @@ impl FloatParameter {
             smoother: None,
             is_db: true,
             step_size: None,
+            step_decimals: 0,
         }
     }
 
@@ -707,6 +732,7 @@ impl FloatParameter {
             smoother: None,
             is_db: true,
             step_size: None,
+            step_decimals: 0,
         }
     }
 
@@ -759,6 +785,7 @@ impl FloatParameter {
             smoother: None,
             is_db: true,
             step_size: None,
+            step_decimals: 0,
         }
     }
 
@@ -784,7 +811,7 @@ impl FloatParameter {
     pub fn hz(name: &'static str, default_hz: f64, range_hz: RangeInclusive<f64>) -> Self {
         let mapper = LogMapper::new(range_hz.clone());
         let default_normalized = mapper.normalize(default_hz);
-        let formatter = Formatter::Frequency;
+        let formatter = Formatter::Frequency { precision: None };
 
         Self {
             info: ParameterInfo {
@@ -805,6 +832,7 @@ impl FloatParameter {
             smoother: None,
             is_db: false,
             step_size: None,
+            step_decimals: 0,
         }
     }
 
@@ -982,8 +1010,23 @@ impl FloatParameter {
     /// Set the step size for discrete stepping.
     ///
     /// When set, values are snapped to the nearest multiple of `step_size`
-    /// within the parameter's range. The `step_count` is automatically calculated
-    /// as `((max - min) / step_size).round()` for host UI integration.
+    /// from the range's minimum, within the range (the maximum counts as a
+    /// step, also when it lies between two): when set and wherever a
+    /// plain value is read (`get()`, the display text, the target a
+    /// smoother moves towards), so a value reads back exactly (440.0, not
+    /// 439.99999999999983 after the round trip through a log mapping). Any
+    /// normalized value set is stored as that of the nearest step too, so a
+    /// change of less than half a step changes nothing. The default snaps
+    /// as well. The display shows the decimals of the steps: a step of 0.1
+    /// shows "442.5", a step of 1.0 shows "442". A later `with_precision()`
+    /// or `with_formatter()` overrides that.
+    ///
+    /// Hosts see the parameter as continuous (a step count of 0): a host
+    /// spreads a parameter's steps evenly over the normalized range, which
+    /// a mapping that is not linear (`hz`, `db_log`) does not, so the host's
+    /// steps would skip or double some of the parameter's. A continuous
+    /// host control reaches every step, as each position snaps to the
+    /// nearest one.
     ///
     /// # Panics
     ///
@@ -999,17 +1042,6 @@ impl FloatParameter {
     /// volume.set(-5.3);
     /// assert_eq!(volume.get(), -5.5); // Snapped to nearest 0.5
     /// ```
-    ///
-    /// # Format-specific behavior
-    ///
-    /// - **VST3**: Fully supported. The `step_count` is communicated to the host,
-    ///   which uses it for UI granularity and automation.
-    /// - **AUv3**: Values are snapped correctly. However, the AUv3 API has no step
-    ///   property, so hosts may display their own UI granularity based on the
-    ///   parameter range.
-    /// - **AUv2**: Values are snapped correctly. The AUv2 `AudioUnitParameterInfo`
-    ///   structure has no step size field (format limitation), so hosts display
-    ///   raw floating-point precision in their native UI.
     pub fn with_step_size(mut self, step_size: f64) -> Self {
         assert!(
             step_size > 0.0,
@@ -1018,32 +1050,36 @@ impl FloatParameter {
         );
 
         let (min, max) = self.range.range();
-        let range_size = max - min;
-
-        // Calculate step_count: number of intervals (not values)
-        // step_count = 0 means continuous, step_count = N means N+1 discrete values
-        let step_count = if step_size >= range_size {
-            // Step size larger than range: treat as 2 values (min, max)
-            1
-        } else {
-            (range_size / step_size).round() as i32
-        };
-
         self.step_size = Some(step_size);
-        self.info.step_count = step_count;
+        // The values on the steps are min + k * step_size: they have the
+        // decimals of the step or of the minimum, whichever has more.
+        self.step_decimals = step_decimals(step_size).max(step_decimals(min));
+        // The maximum is a value too, which `snap_to_step` returns as it is:
+        // the display shows its decimals as well, unless it has no end of
+        // them (a maximum of 2 pi).
+        let max_decimals = step_decimals(max);
+        let shown_decimals = if max_decimals < MAX_STEP_DECIMALS {
+            self.step_decimals.max(max_decimals)
+        } else {
+            self.step_decimals
+        };
+        self.formatter = self
+            .formatter
+            .with_step(10f64.powi(-(shown_decimals as i32)));
+        // Put the default and the value on a step, so that they read back
+        // exactly.
+        let default = self.plain(self.info.default_normalized);
+        self.info.default_normalized = self.range.normalize(default);
+        let value = self.plain(f64::from_bits(self.value.load(Ordering::Relaxed)));
+        self.value
+            .store(self.range.normalize(value).to_bits(), Ordering::Relaxed);
+        self.reset_smoothing();
         self
     }
 
     /// Get the step size, if configured.
     pub fn step_size(&self) -> Option<f64> {
         self.step_size
-    }
-
-    /// Get the step count for host UI integration.
-    ///
-    /// Returns 0 for continuous parameters, or N for parameters with N+1 discrete values.
-    pub fn step_count(&self) -> i32 {
-        self.info.step_count
     }
 
     /// Set the display precision for this parameter.
@@ -1058,9 +1094,9 @@ impl FloatParameter {
     /// let gain = FloatParameter::db("Output", 0.0, -12.0..=12.0)
     ///     .with_precision(2);  // Shows "-0.50 dB" instead of "-0.5 dB"
     ///
-    /// // Frequency with custom precision
+    /// // Frequency in whole Hz: with a precision it shows "1500", not "1.50k".
     /// let freq = FloatParameter::hz("Cutoff", 1000.0, 20.0..=20000.0)
-    ///     .with_precision(0);  // Note: Frequency formatter uses auto-scaling
+    ///     .with_precision(0);
     /// ```
     pub fn with_precision(mut self, precision: usize) -> Self {
         self.formatter = self.formatter.with_precision(precision);
@@ -1115,10 +1151,11 @@ impl FloatParameter {
     // === Value access ===
 
     /// Get the current plain value in natural units.
+    ///
+    /// If a step size is configured, the value is on a step.
     #[inline]
     pub fn get(&self) -> f64 {
-        let normalized = f64::from_bits(self.value.load(Ordering::Relaxed));
-        self.range.denormalize(normalized)
+        self.plain(f64::from_bits(self.value.load(Ordering::Relaxed)))
     }
 
     /// Set the plain value in natural units.
@@ -1126,15 +1163,28 @@ impl FloatParameter {
     /// If a step size is configured, the value is snapped to the nearest step.
     #[inline]
     pub fn set(&self, value: f64) {
-        let snapped = match self.step_size {
+        let normalized = self.range.normalize(self.snapped(value));
+        self.value.store(normalized.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The plain value of `normalized`, on the nearest step when a step
+    /// size is configured.
+    #[inline]
+    fn plain(&self, normalized: f64) -> f64 {
+        self.snapped(self.range.denormalize(normalized))
+    }
+
+    /// The plain value `value` on the nearest step when a step size is
+    /// configured, else `value` itself.
+    #[inline]
+    fn snapped(&self, value: f64) -> f64 {
+        match self.step_size {
             Some(step) => {
                 let (min, max) = self.range.range();
-                snap_to_step(value, step, min, max)
+                snap_to_step(value, step, self.step_decimals, min, max)
             }
             None => value,
-        };
-        let normalized = self.range.normalize(snapped);
-        self.value.store(normalized.to_bits(), Ordering::Relaxed);
+        }
     }
 
     /// Get the value as linear amplitude.
@@ -1184,7 +1234,7 @@ impl FloatParameter {
             SmoothingStyle::None => None,
             _ => {
                 let bits = self.value.load(Ordering::Relaxed);
-                let value = self.range.denormalize(f64::from_bits(bits));
+                let value = self.plain(f64::from_bits(bits));
                 Some(AtomicSmoother::new(style, bits, value))
             }
         };
@@ -1201,7 +1251,7 @@ impl FloatParameter {
             smoother.set_sample_rate(
                 sample_rate,
                 self.value.load(Ordering::Relaxed),
-                |normalized| self.range.denormalize(normalized),
+                |normalized| self.plain(normalized),
             );
         }
     }
@@ -1234,7 +1284,7 @@ impl FloatParameter {
             // The smoother follows the atomic value (in case the host
             // changed it).
             Some(smoother) => smoother.tick(self.value.load(Ordering::Relaxed), |normalized| {
-                self.range.denormalize(normalized)
+                self.plain(normalized)
             }),
             None => self.get(),
         }
@@ -1253,7 +1303,7 @@ impl FloatParameter {
         if let Some(smoother) = &self.smoother {
             smoother.skip(
                 self.value.load(Ordering::Relaxed),
-                |normalized| self.range.denormalize(normalized),
+                |normalized| self.plain(normalized),
                 samples,
             );
         }
@@ -1264,7 +1314,7 @@ impl FloatParameter {
         match &self.smoother {
             Some(smoother) => smoother.fill(
                 self.value.load(Ordering::Relaxed),
-                |normalized| self.range.denormalize(normalized),
+                |normalized| self.plain(normalized),
                 buffer.len(),
                 |index, value| buffer[index] = value,
             ),
@@ -1279,7 +1329,7 @@ impl FloatParameter {
         match &self.smoother {
             Some(smoother) => smoother.fill(
                 self.value.load(Ordering::Relaxed),
-                |normalized| self.range.denormalize(normalized),
+                |normalized| self.plain(normalized),
                 buffer.len(),
                 |index, value| buffer[index] = value as f32,
             ),
@@ -1303,7 +1353,7 @@ impl FloatParameter {
     pub fn reset_smoothing(&self) {
         if let Some(smoother) = &self.smoother {
             let bits = self.value.load(Ordering::Relaxed);
-            smoother.reset(bits, self.range.denormalize(f64::from_bits(bits)));
+            smoother.reset(bits, self.plain(f64::from_bits(bits)));
         }
     }
 }
@@ -1343,7 +1393,42 @@ impl ParameterRef for FloatParameter {
 
     fn set_normalized(&self, value: ParameterValue) {
         self.value
-            .store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            .store(self.stored_normalized(value).to_bits(), Ordering::Relaxed);
+    }
+
+    // With a step the normalized value of the nearest step, so that a
+    // control that moves by a part of the range (an arrow key) starts from
+    // a step each time and reaches the next one.
+    fn stored_normalized(&self, normalized: ParameterValue) -> ParameterValue {
+        let clamped = normalized.clamp(0.0, 1.0);
+        match self.step_size {
+            Some(_) => self.range.normalize(self.plain(clamped)),
+            None => clamped,
+        }
+    }
+
+    fn step_size(&self) -> Option<f64> {
+        self.step_size
+    }
+
+    // A whole step in plain units from the nearest step, whatever the
+    // mapping: on a log mapping the steps lie closer together in normalized
+    // values at the top than at the bottom.
+    fn step_from(&self, normalized: ParameterValue, steps: i32) -> Option<ParameterValue> {
+        let step = self.step_size?;
+        let (min, max) = self.range.range();
+        let mut from = self.plain(normalized.clamp(0.0, 1.0));
+        let mut steps = steps;
+        // From a maximum off the steps the first step down is the highest
+        // step below it, which can be nearer than a whole step.
+        if steps < 0 && from == max {
+            let below = self.snapped(min + ((max - min) / step).floor() * step);
+            if below < max {
+                from = below;
+                steps += 1;
+            }
+        }
+        Some(self.range.normalize(self.snapped(from + f64::from(steps) * step)))
     }
 
     fn get_plain(&self) -> ParameterValue {
@@ -1355,21 +1440,20 @@ impl ParameterRef for FloatParameter {
     }
 
     fn display_normalized(&self, normalized: ParameterValue) -> String {
-        let plain = self.range.denormalize(normalized);
-        self.formatter.text(plain)
+        self.formatter.text(self.plain(normalized))
     }
 
     fn parse(&self, s: &str) -> Option<ParameterValue> {
         let plain = self.formatter.parse(s)?;
-        Some(self.range.normalize(plain))
+        Some(self.range.normalize(self.snapped(plain)))
     }
 
     fn normalized_to_plain(&self, normalized: ParameterValue) -> ParameterValue {
-        self.range.denormalize(normalized)
+        self.plain(normalized)
     }
 
     fn plain_to_normalized(&self, plain: ParameterValue) -> ParameterValue {
-        self.range.normalize(plain)
+        self.range.normalize(self.snapped(plain))
     }
 
     fn formatter_kind(&self) -> &'static str {
@@ -2425,15 +2509,41 @@ fn db_to_linear(db: f64) -> f64 {
     }
 }
 
-/// Snap a value to the nearest step within a range.
+/// The normalized value `steps` steps from `normalized` among `count`
+/// steps spread evenly over the normalized range, as a discrete parameter
+/// has them. `None` without steps.
+pub(crate) fn step_evenly(normalized: ParameterValue, steps: i32, count: i32) -> Option<ParameterValue> {
+    if count <= 0 {
+        return None;
+    }
+    let count = f64::from(count);
+    let index = ((normalized.clamp(0.0, 1.0) * count).round() + f64::from(steps)).clamp(0.0, count);
+    Some(index / count)
+}
+
+/// Snap a value to the nearest step within a range, rounded to the
+/// `decimals` of the values on the steps. Not rounded at
+/// [`MAX_STEP_DECIMALS`]: the steps are then no decimals (a step of 1/3).
 #[inline]
-fn snap_to_step(value: f64, step_size: f64, min: f64, max: f64) -> f64 {
+fn snap_to_step(value: f64, step_size: f64, decimals: usize, min: f64, max: f64) -> f64 {
     // Calculate the number of steps from min
     let steps_from_min = ((value - min) / step_size).round();
     // Calculate snapped value
     let snapped = min + steps_from_min * step_size;
-    // Clamp to range (handles edge cases from rounding)
-    snapped.clamp(min, max)
+    // The nearest f64 to the step's decimal value: three steps of 0.1 are
+    // 0.3, not 0.30000000000000004.
+    let snapped = if decimals < MAX_STEP_DECIMALS {
+        let scale = 10f64.powi(decimals as i32);
+        (snapped * scale).round() / scale
+    } else {
+        snapped
+    };
+    // The maximum counts as a step, also when it lies between two, so that
+    // a value clamped to it snaps to it again when read.
+    if snapped >= max || (max - value).abs() < (snapped - value).abs() {
+        return max;
+    }
+    snapped.max(min)
 }
 
 // =============================================================================
@@ -2475,19 +2585,24 @@ mod tests {
     }
 
     #[test]
-    fn test_step_count_calculation() {
-        let parameter = FloatParameter::new("Test", 0.0, 0.0..=10.0).with_step_size(0.5);
-
-        // 10.0 / 0.5 = 20 steps, meaning 21 discrete values
-        assert_eq!(parameter.step_count(), 20);
+    fn test_a_stepped_parameter_is_continuous_to_hosts_and_reaches_every_step() {
+        let reference = FloatParameter::hz("Reference", 440.0, 400.0..=480.0).with_step_size(0.1);
+        assert_eq!(reference.step_count(), 0);
+        // Every position of a host control lands on a step; together they
+        // reach all 801 steps, none skipped.
+        let mut reached = std::collections::BTreeSet::new();
+        for position in 0..=8000 {
+            let plain = reference.normalized_to_plain(f64::from(position) / 8000.0);
+            let tenths = plain * 10.0;
+            assert_eq!(tenths, tenths.round(), "{plain} is on a step");
+            reached.insert(tenths as i64);
+        }
+        assert_eq!(reached.len(), 801);
     }
 
     #[test]
     fn test_step_size_with_negative_range() {
         let parameter = FloatParameter::db("Gain", 0.0, -60.0..=12.0).with_step_size(0.5);
-
-        // Range is 72, so 144 steps
-        assert_eq!(parameter.step_count(), 144);
 
         parameter.set(-5.3);
         assert!((parameter.get() - -5.5).abs() < 1e-10);
@@ -2520,8 +2635,11 @@ mod tests {
     fn test_step_size_larger_than_range() {
         let parameter = FloatParameter::new("Test", 0.0, 0.0..=1.0).with_step_size(2.0);
 
-        // Step larger than range = step_count of 1 (two values: min and max)
-        assert_eq!(parameter.step_count(), 1);
+        // Two values: the minimum and the maximum.
+        parameter.set(0.4);
+        assert_eq!(parameter.get(), 0.0);
+        parameter.set(0.7);
+        assert_eq!(parameter.get(), 1.0);
     }
 
     #[test]
@@ -2788,15 +2906,163 @@ mod tests {
     #[test]
     fn test_snap_to_step_helper() {
         // Basic snapping
-        assert!((snap_to_step(2.3, 0.5, 0.0, 10.0) - 2.5).abs() < 1e-10);
-        assert!((snap_to_step(2.2, 0.5, 0.0, 10.0) - 2.0).abs() < 1e-10);
+        assert_eq!(snap_to_step(2.3, 0.5, 1, 0.0, 10.0), 2.5);
+        assert_eq!(snap_to_step(2.2, 0.5, 1, 0.0, 10.0), 2.0);
 
         // Negative range
-        assert!((snap_to_step(-5.3, 0.5, -60.0, 12.0) - -5.5).abs() < 1e-10);
+        assert_eq!(snap_to_step(-5.3, 0.5, 1, -60.0, 12.0), -5.5);
 
         // Clamping
-        assert!((snap_to_step(-1.0, 0.5, 0.0, 10.0) - 0.0).abs() < 1e-10);
-        assert!((snap_to_step(11.0, 0.5, 0.0, 10.0) - 10.0).abs() < 1e-10);
+        assert_eq!(snap_to_step(-1.0, 0.5, 1, 0.0, 10.0), 0.0);
+        assert_eq!(snap_to_step(11.0, 0.5, 1, 0.0, 10.0), 10.0);
+
+        // The nearest f64 to the decimal value, not the product's error.
+        assert_eq!(snap_to_step(0.31, 0.1, 1, 0.0, 1.0), 0.3);
+    }
+
+    #[test]
+    fn test_a_stepped_frequency_reads_back_exactly_and_shows_its_step() {
+        // A log mapping's round trip alone reads 439.99999999999983.
+        let reference = FloatParameter::hz("Reference", 440.0, 400.0..=480.0).with_step_size(0.1);
+        assert_eq!(reference.get(), 440.0);
+        assert_eq!(reference.normalized_to_plain(0.0), 400.0);
+        assert_eq!(reference.normalized_to_plain(1.0), 480.0);
+        assert_eq!(reference.normalized_to_plain(reference.default_normalized()), 440.0);
+        assert_eq!(reference.display_normalized(reference.get_normalized()), "440.0");
+        reference.set(442.5);
+        assert_eq!(reference.get(), 442.5);
+        assert_eq!(reference.display_normalized(reference.get_normalized()), "442.5");
+        // A host's value between two steps reads as the nearest step.
+        reference.set_normalized(reference.plain_to_normalized(442.53) + 1e-9);
+        assert_eq!(reference.get(), 442.5);
+        // Typed text snaps.
+        let typed = reference.parse("442.57 Hz").unwrap();
+        assert_eq!(reference.normalized_to_plain(typed), 442.6);
+    }
+
+    #[test]
+    fn test_a_part_of_the_range_moves_a_log_mapped_step_to_the_next() {
+        // An arrow key adds 1/800 to the normalized value: 0.09 to 0.11 Hz
+        // along the log mapping of 400 to 480 Hz.
+        for start in [400.0, 470.0] {
+            let reference = FloatParameter::hz("Reference", 440.0, 400.0..=480.0).with_step_size(0.1);
+            reference.set(start);
+            for press in 1..=30 {
+                reference.set_normalized(reference.get_normalized() + 1.0 / 800.0);
+                let expected = ((start + 0.1 * f64::from(press)) * 10.0).round() / 10.0;
+                assert_eq!(reference.get(), expected.min(480.0), "press {press} from {start}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_step_from_a_value_is_one_step_in_plain_units() {
+        let reference = FloatParameter::hz("Reference", 440.0, 400.0..=480.0).with_step_size(0.1);
+        let up = reference.step_from(reference.get_normalized(), 1).unwrap();
+        assert_eq!(reference.normalized_to_plain(up), 440.1);
+        let down = reference.step_from(reference.get_normalized(), -10).unwrap();
+        assert_eq!(reference.normalized_to_plain(down), 439.0);
+        // From between two steps it counts from the nearest one.
+        let between = reference.plain_to_normalized(442.53) + 1e-9;
+        assert_eq!(reference.normalized_to_plain(reference.step_from(between, 1).unwrap()), 442.6);
+        // It stays within the range, also from a maximum off the steps.
+        assert_eq!(reference.normalized_to_plain(reference.step_from(1.0, 1).unwrap()), 480.0);
+        let ragged = FloatParameter::new("Test", 0.95, 0.0..=0.95).with_step_size(0.1);
+        assert_eq!(ragged.normalized_to_plain(ragged.step_from(1.0, -1).unwrap()), 0.9);
+        assert_eq!(ragged.normalized_to_plain(ragged.step_from(0.9 / 0.95, 1).unwrap()), 0.95);
+        // Down from a maximum below the half step: the highest step first.
+        for (max, step, expected) in [(0.93, 0.1, [0.9, 0.8]), (10.25, 1.0, [10.0, 9.0])] {
+            let parameter = FloatParameter::new("Test", 0.0, 0.0..=max).with_step_size(step);
+            for (steps, expected) in [-1, -2].into_iter().zip(expected) {
+                let down = parameter.step_from(1.0, steps).unwrap();
+                assert_eq!(parameter.normalized_to_plain(down), expected, "{steps} from {max}");
+            }
+        }
+        // A continuous parameter has no steps.
+        assert_eq!(FloatParameter::new("Gain", 0.5, 0.0..=1.0).step_from(0.5, 1), None);
+        assert_eq!(FloatParameter::new("Gain", 0.5, 0.0..=1.0).step_size(), None);
+    }
+
+    #[test]
+    fn test_a_step_from_a_discrete_value_is_the_next_choice() {
+        let steps = IntParameter::new("Steps", 0, 0..=4);
+        assert_eq!(steps.step_from(0.3, 1), Some(0.5));
+        assert_eq!(steps.step_from(0.3, -1), Some(0.0));
+        assert_eq!(steps.step_from(1.0, 1), Some(1.0));
+        assert_eq!(BoolParameter::new("Enabled", false).step_from(0.0, 1), Some(1.0));
+        assert_eq!(ParameterRef::step_size(&steps), None);
+    }
+
+    #[test]
+    fn test_the_steps_start_at_the_minimum() {
+        // The steps are 0.05, 0.15, 0.25 and so on: two decimals.
+        let parameter = FloatParameter::new("Test", 0.15, 0.05..=0.95).with_step_size(0.1);
+        assert_eq!(parameter.get(), 0.15);
+        assert_eq!(parameter.display_normalized(parameter.get_normalized()), "0.15");
+        parameter.set(0.31);
+        assert_eq!(parameter.get(), 0.35);
+    }
+
+    #[test]
+    fn test_a_maximum_off_the_steps_shows_its_own_decimals() {
+        // The steps are 0.0 to 0.9, the maximum 0.95: two decimals.
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=0.95).with_step_size(0.1);
+        parameter.set(0.95);
+        assert_eq!(parameter.get(), 0.95);
+        assert_eq!(parameter.display_normalized(parameter.get_normalized()), "0.95");
+        parameter.set(0.9);
+        assert_eq!(parameter.display_normalized(parameter.get_normalized()), "0.90");
+    }
+
+    #[test]
+    fn test_a_maximum_without_an_end_of_decimals_leaves_the_display_alone() {
+        let angle = FloatParameter::new("Angle", 1.23, 0.0..=std::f64::consts::TAU).with_step_size(0.01);
+        assert_eq!(angle.get(), 1.23);
+        assert_eq!(angle.display_normalized(angle.get_normalized()), "1.23");
+    }
+
+    #[test]
+    fn test_a_step_below_a_millionth_keeps_its_values() {
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=0.0001).with_step_size(5e-7);
+        // 24.6 steps of 5e-7 snap to 25. Before, every value read 0.
+        parameter.set(0.0000123);
+        assert!((parameter.get() - 0.0000125).abs() < 1e-12, "{}", parameter.get());
+    }
+
+    #[test]
+    fn test_a_step_that_is_no_decimal_is_not_rounded() {
+        let parameter = FloatParameter::new("Test", 0.0, 0.0..=1.0).with_step_size(1.0 / 3.0);
+        parameter.set(0.3);
+        assert_eq!(parameter.get(), 1.0 / 3.0);
+    }
+
+    #[test]
+    fn test_the_display_follows_the_step() {
+        let attack = FloatParameter::ms("Attack", 10.0, 1.0..=100.0).with_step_size(1.0);
+        assert_eq!(attack.display_normalized(attack.get_normalized()), "10");
+        let mix = FloatParameter::percent("Mix", 0.5, 0.0..=1.0).with_step_size(0.005);
+        mix.set(0.125);
+        assert_eq!(mix.display_normalized(mix.get_normalized()), "12.5");
+        // A later precision wins.
+        let gain = FloatParameter::db("Gain", 0.0, -60.0..=12.0)
+            .with_step_size(0.5)
+            .with_precision(2);
+        gain.set(-5.3);
+        assert_eq!(gain.display_normalized(gain.get_normalized()), "-5.50");
+    }
+
+    #[test]
+    fn test_a_stepped_smoother_starts_and_ends_on_a_step() {
+        let reference = FloatParameter::hz("Reference", 440.0, 400.0..=480.0)
+            .with_smoother(SmoothingStyle::Linear(1.0))
+            .with_step_size(0.1);
+        reference.set_sample_rate(1000.0);
+        assert_eq!(reference.smoothed(), 440.0);
+        reference.set(441.0);
+        for _ in 0..10 {
+            reference.tick_smoothed();
+        }
+        assert_eq!(reference.tick_smoothed(), 441.0);
     }
 
     // =========================================================================
@@ -2903,8 +3169,6 @@ mod tests {
             .with_precision(2);
 
         // Both should work together.
-        // (12 - (-60)) / 0.5 = 144.
-        assert_eq!(parameter.step_count(), 144);
         assert_eq!(parameter.formatter().precision(), Some(2));
 
         parameter.set(-5.3);
@@ -3137,9 +3401,13 @@ mod tests {
         assert_stores_as_set(&IntParameter::new("Steps", 0, 0..=4));
         assert_stores_as_set(&IntParameter::new("Transpose", 0, -24..=24));
         assert_stores_as_set(&BoolParameter::new("Enabled", false));
+        assert_stores_as_set(&FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_step_size(0.25));
 
-        // A float with steps still stores any value, for its smoother.
-        assert!(!FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_step_size(0.25).is_discrete());
+        // A float with steps stores the nearest step, but goes between
+        // steps with its smoother.
+        let stepped = FloatParameter::new("Gain", 0.5, 0.0..=1.0).with_step_size(0.25);
+        assert_eq!(stepped.stored_normalized(0.3), 0.25);
+        assert!(!stepped.is_discrete());
         assert!(IntParameter::new("Steps", 0, 0..=4).is_discrete());
         assert!(BoolParameter::new("Enabled", false).is_discrete());
 

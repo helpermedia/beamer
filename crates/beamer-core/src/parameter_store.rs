@@ -136,6 +136,20 @@ pub trait ParameterStore: Send + Sync {
         "float"
     }
 
+    /// The step of a float parameter with one, in plain units. `None` by
+    /// default.
+    fn step_size(&self, _id: ParameterId) -> Option<f64> {
+        None
+    }
+
+    /// The normalized value `steps` steps from `normalized` (see
+    /// [`ParameterRef::step_from`](crate::parameter_types::ParameterRef::step_from)).
+    /// By default the next choice of a discrete parameter by the step count
+    /// of its info. `None` for a continuous one.
+    fn step_from(&self, id: ParameterId, normalized: ParameterValue, steps: i32) -> Option<ParameterValue> {
+        crate::parameter_types::step_evenly(normalized, steps, self.info_by_id(id)?.step_count)
+    }
+
     /// Find parameter info by ID.
     ///
     /// Default implementation searches linearly through all parameters.
@@ -197,6 +211,14 @@ impl<T: Parameters> ParameterStore for T {
     fn formatter_kind(&self, id: ParameterId) -> &'static str {
         self.by_id(id)
             .map_or("float", |parameter| parameter.formatter_kind())
+    }
+
+    fn step_size(&self, id: ParameterId) -> Option<f64> {
+        self.by_id(id).and_then(|parameter| parameter.step_size())
+    }
+
+    fn step_from(&self, id: ParameterId, normalized: ParameterValue, steps: i32) -> Option<ParameterValue> {
+        self.by_id(id).and_then(|parameter| parameter.step_from(normalized, steps))
     }
 
     // The AU render thread converts the values of parameter events through

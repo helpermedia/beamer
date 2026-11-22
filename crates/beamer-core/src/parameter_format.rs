@@ -24,7 +24,7 @@
 //! assert_eq!(db_formatter.text(1.0), "0.0");   // Value only
 //! assert_eq!(db_formatter.unit(), "dB");       // Unit separately
 //!
-//! let hz_formatter = Formatter::Frequency;
+//! let hz_formatter = Formatter::Frequency { precision: None };
 //! assert_eq!(hz_formatter.text(440.0), "440");
 //! assert_eq!(hz_formatter.text(1500.0), "1.50k");  // Auto-scaled with SI prefix
 //! assert_eq!(hz_formatter.unit(), "Hz");
@@ -62,10 +62,17 @@ pub enum Formatter {
         min_db: f64,
     },
 
-    /// Frequency formatter with automatic Hz/kHz scaling.
+    /// Frequency formatter.
     ///
-    /// Format: "440", "1.50k" (unit "Hz" via `unit()`)
-    Frequency,
+    /// Without a precision it scales: one decimal below 100 Hz, whole Hz
+    /// from there, kHz with two decimals from 1 kHz ("44.0", "440",
+    /// "1.50k"). With a precision it shows Hz with that many decimals at
+    /// any value ("442.5", "1500.0"), as for a parameter with a step. Unit
+    /// "Hz" via `unit()`.
+    Frequency {
+        /// Number of decimal places, `None` to scale.
+        precision: Option<usize>,
+    },
 
     /// Milliseconds formatter.
     ///
@@ -258,7 +265,11 @@ impl Formatter {
                 }
             }
 
-            Formatter::Frequency => {
+            Formatter::Frequency { precision: Some(precision) } => {
+                format!("{:.prec$}", value, prec = *precision)
+            }
+
+            Formatter::Frequency { precision: None } => {
                 if value >= 1000.0 {
                     format!("{:.2}k", value / 1000.0)
                 } else if value >= 100.0 {
@@ -362,7 +373,7 @@ impl Formatter {
                 trimmed.parse().ok()
             }
 
-            Formatter::Frequency => {
+            Formatter::Frequency { .. } => {
                 // The unit is optional and its case does not matter. A "k"
                 // multiplies by 1000, with or without "Hz" after it: `text`
                 // writes "1.50k" and a host may append the unit.
@@ -441,7 +452,7 @@ impl Formatter {
             Formatter::Float { .. } => "",
             Formatter::Decibel { .. } => "dB",
             Formatter::DecibelDirect { .. } => "dB",
-            Formatter::Frequency => "Hz",
+            Formatter::Frequency { .. } => "Hz",
             Formatter::Milliseconds { .. } => "ms",
             Formatter::Seconds { .. } => "s",
             Formatter::Percent { .. } => "%",
@@ -461,7 +472,7 @@ impl Formatter {
             Formatter::Float { .. } => "float",
             Formatter::Decibel { .. } => "db",
             Formatter::DecibelDirect { .. } => "db",
-            Formatter::Frequency => "hz",
+            Formatter::Frequency { .. } => "hz",
             Formatter::Milliseconds { .. } => "ms",
             Formatter::Seconds { .. } => "s",
             Formatter::Percent { .. } => "percent",
@@ -485,8 +496,9 @@ impl Formatter {
     ///
     /// For formatter variants that have a `precision` field, this returns
     /// a new formatter with the updated precision. For variants without
-    /// precision (e.g., `Pan`, `Boolean`, `Semitones`, `NoteNumber`, `Frequency`), this
-    /// returns `self` unchanged.
+    /// precision (`Pan`, `Boolean`, `Semitones`, `NoteNumber`), this returns
+    /// `self` unchanged. A `Frequency` formatter with a precision stops
+    /// scaling to kHz.
     ///
     /// # Example
     ///
@@ -510,9 +522,11 @@ impl Formatter {
             Formatter::Seconds { .. } => Formatter::Seconds { precision },
             Formatter::Percent { .. } => Formatter::Percent { precision },
             Formatter::Ratio { .. } => Formatter::Ratio { precision },
+            Formatter::Frequency { .. } => Formatter::Frequency {
+                precision: Some(precision),
+            },
             // Variants without precision return self unchanged
-            Formatter::Frequency
-            | Formatter::Pan
+            Formatter::Pan
             | Formatter::Semitones
             | Formatter::NoteNumber { .. }
             | Formatter::Boolean => self,
@@ -532,6 +546,7 @@ impl Formatter {
                 | Formatter::Seconds { .. }
                 | Formatter::Percent { .. }
                 | Formatter::Ratio { .. }
+                | Formatter::Frequency { .. }
         )
     }
 
@@ -548,13 +563,50 @@ impl Formatter {
             | Formatter::Seconds { precision }
             | Formatter::Percent { precision }
             | Formatter::Ratio { precision } => Some(*precision),
-            Formatter::Frequency
-            | Formatter::Pan
+            Formatter::Frequency { precision } => *precision,
+            Formatter::Pan
             | Formatter::Semitones
             | Formatter::NoteNumber { .. }
             | Formatter::Boolean => None,
         }
     }
+
+    /// Return a new `Formatter` that shows the decimals of `step`, the step
+    /// of a parameter in plain units: a step of 0.1 Hz shows one decimal, a
+    /// step of 1 ms none. A percentage counts the decimals of the step as
+    /// shown, so a step of 0.005 (0.5%) shows one. Variants without
+    /// precision return `self` unchanged.
+    pub fn with_step(self, step: f64) -> Self {
+        if !self.supports_precision() {
+            return self;
+        }
+        let shown_step = match self {
+            Formatter::Percent { .. } => step * 100.0,
+            _ => step,
+        };
+        self.with_precision(step_decimals(shown_step))
+    }
+}
+
+/// The most decimals a step is shown and snapped with.
+pub(crate) const MAX_STEP_DECIMALS: usize = 7;
+
+/// The number of decimals of `step`: 0 for 0.0, 1.0 or 5.0, 1 for 0.5, 2
+/// for 0.25. At most [`MAX_STEP_DECIMALS`], also for a value that is no
+/// decimal (1/3).
+pub(crate) fn step_decimals(step: f64) -> usize {
+    let step = step.abs();
+    if step == 0.0 {
+        return 0;
+    }
+    (0..MAX_STEP_DECIMALS)
+        .find(|decimals| {
+            let scaled = step * 10f64.powi(*decimals as i32);
+            // A step below 1e-6 is within the tolerance of 0 at 0 decimals:
+            // it counts only once it reaches a whole unit.
+            scaled.round() >= 1.0 && (scaled - scaled.round()).abs() < 1e-6
+        })
+        .unwrap_or(MAX_STEP_DECIMALS)
 }
 
 #[cfg(test)]
@@ -628,16 +680,48 @@ mod tests {
     }
 
     #[test]
-    fn test_with_precision_no_effect_on_frequency() {
-        let formatter = Formatter::Frequency;
-        let updated = formatter.with_precision(5);
-        assert_eq!(updated, Formatter::Frequency);
-        assert_eq!(updated.precision(), None);
+    fn test_with_precision_frequency_stops_scaling() {
+        let formatter = Formatter::Frequency { precision: None };
+        assert_eq!(formatter.precision(), None);
+        let updated = formatter.with_precision(1);
+        assert_eq!(updated.precision(), Some(1));
+        assert_eq!(updated.text(442.5), "442.5");
+        assert_eq!(updated.text(1500.0), "1500.0");
+        assert_eq!(updated.parse("442.5 Hz"), Some(442.5));
+    }
+
+    #[test]
+    fn test_with_step_shows_the_decimals_of_the_step() {
+        let frequency = Formatter::Frequency { precision: None }.with_step(0.1);
+        assert_eq!(frequency.text(440.0), "440.0");
+        let milliseconds = Formatter::Milliseconds { precision: 1 }.with_step(1.0);
+        assert_eq!(milliseconds.text(10.0), "10");
+        let decibels = Formatter::DecibelDirect { precision: 1, min_db: -60.0 }.with_step(0.25);
+        assert_eq!(decibels.text(-6.25), "-6.25");
+        // 0.005 is 0.5%.
+        let percent = Formatter::Percent { precision: 0 }.with_step(0.005);
+        assert_eq!(percent.text(0.125), "12.5");
+        assert_eq!(Formatter::Pan.with_step(0.1), Formatter::Pan);
+    }
+
+    #[test]
+    fn test_step_decimals() {
+        assert_eq!(step_decimals(1.0), 0);
+        assert_eq!(step_decimals(10.0), 0);
+        assert_eq!(step_decimals(0.5), 1);
+        assert_eq!(step_decimals(0.1), 1);
+        assert_eq!(step_decimals(0.25), 2);
+        assert_eq!(step_decimals(0.001), 3);
+        assert_eq!(step_decimals(1.0 / 3.0), MAX_STEP_DECIMALS);
+        assert_eq!(step_decimals(0.0), 0);
+        assert_eq!(step_decimals(-60.0), 0);
+        assert_eq!(step_decimals(5e-7), MAX_STEP_DECIMALS);
+        assert_eq!(step_decimals(5e-6), 6);
     }
 
     #[test]
     fn test_frequency_parses_its_own_text() {
-        let formatter = Formatter::Frequency;
+        let formatter = Formatter::Frequency { precision: None };
 
         for hz in [20.0, 440.0, 1500.0, 4000.0, 20000.0] {
             let text = formatter.text(hz);
@@ -747,7 +831,8 @@ mod tests {
             Formatter::Float { precision: 2 },
             Formatter::Decibel { precision: 1 },
             Formatter::DecibelDirect { precision: 1, min_db: -60.0 },
-            Formatter::Frequency,
+            Formatter::Frequency { precision: None },
+            Formatter::Frequency { precision: Some(1) },
             Formatter::Milliseconds { precision: 1 },
             Formatter::Seconds { precision: 2 },
             Formatter::Percent { precision: 0 },
@@ -828,7 +913,7 @@ mod tests {
         assert!(Formatter::Percent { precision: 0 }.supports_precision());
         assert!(Formatter::Ratio { precision: 1 }.supports_precision());
 
-        assert!(!Formatter::Frequency.supports_precision());
+        assert!(Formatter::Frequency { precision: None }.supports_precision());
         assert!(!Formatter::Pan.supports_precision());
         assert!(!Formatter::Semitones.supports_precision());
         assert!(!Formatter::Boolean.supports_precision());
@@ -846,7 +931,8 @@ mod tests {
             .precision(),
             Some(1)
         );
-        assert_eq!(Formatter::Frequency.precision(), None);
+        assert_eq!(Formatter::Frequency { precision: None }.precision(), None);
+        assert_eq!(Formatter::Frequency { precision: Some(1) }.precision(), Some(1));
         assert_eq!(Formatter::Pan.precision(), None);
     }
 }

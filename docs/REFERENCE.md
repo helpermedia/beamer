@@ -262,7 +262,7 @@ impl Default for SamplerModel {
 | `kind = "..."` | Unit type (see below) | Optional |
 | `group = "..."` | Visual grouping without a nested group | Optional |
 | `short_name = "..."` | Short name for constrained UIs | Optional |
-| `step = <value>` | Discrete step size (FloatParameter only) | Optional |
+| `step = <value>` | Discrete step size (FloatParameter only): values snap to the steps and show their decimals | Optional |
 | `smoothing = "exp:5.0"` | Parameter smoothing (`exp` or `linear`, FloatParameter only) | Optional |
 | `bypass` | Mark as bypass parameter (BoolParameter only) | Optional |
 
@@ -366,7 +366,7 @@ Every parameter type has builder methods for customization. Chain these after co
 | `.with_short_name(name)` | Short name for constrained UIs |
 | `.with_group(group_id)` | Assign to parameter group (its id is `group_id(path)`) |
 | `.with_unit(unit)` | Unit type hint for AU hosts (`ParameterUnit`) |
-| `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments) |
+| `.with_step_size(size)` | Enable discrete stepping (e.g., 0.5 dB increments): values snap to the steps and show their decimals |
 | `.with_precision(n)` | Display precision (decimal places) |
 | `.with_formatter(fmt)` | Replace formatter entirely |
 | `.with_smoother(style)` | Add parameter smoothing |
@@ -414,7 +414,9 @@ let volume = FloatParameter::db("Volume", 0.0, -60.0..=12.0)
     .with_smoother(SmoothingStyle::Exponential(5.0));
 ```
 
-**Note:** Formatters without precision fields (`Pan`, `Boolean`, `Semitones`, `NoteNumber`, `Frequency`) ignore `.with_precision()` calls.
+**Note:** Formatters without precision fields (`Pan`, `Boolean`, `Semitones`, `NoteNumber`) ignore `.with_precision()` calls. A frequency without a precision scales to kHz ("440", "1.50k"); with one it shows Hz with that many decimals ("442.5", "1500.0").
+
+**Steps:** a parameter with a step (`step = 0.1` or `.with_step_size(0.1)`) reads only the values on its steps, counted from the range's minimum; the maximum counts as a step, also when it lies between two. A value is snapped when it is set and wherever it is read (`get()`, the display text, the target a smoother moves towards), so it reads back exactly: 440.0, not 439.99999999999983 after a log mapping. A normalized value a host sets is stored as that of the nearest step too. The display shows the decimals of the steps: a step of 0.1 Hz shows "442.5", a step of 1 ms shows "10", a step of 0.005 on a percentage shows "12.5". A `.with_precision()` after the step overrides it. Hosts see a parameter with a step as continuous (a step count of 0): a host spreads steps evenly over the normalized range, which a mapping that is not linear (`hz`, `db_log`) does not, so its steps would skip or double some. Every position of a continuous host control snaps to the nearest step.
 
 #### Parameter Smoothing
 
