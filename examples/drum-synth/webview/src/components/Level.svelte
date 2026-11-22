@@ -4,7 +4,9 @@
   the ticks and the meter sit where `thumbPosition` puts a value, so the
   thumb's center is on the tick of its level and the meter reads on the same
   scale. Drag the thumb or the track (finer with shift), scroll, use the
-  arrow keys once focused, double click to reset.
+  arrow keys once focused, a Command or Option click (Control or Alt
+  outside macOS) to reset. A double click calls `ondblclick`, for the strip
+  to open the level's field to type one.
 
   The slider is an SVG in device pixels, as the balance: every edge on a
   whole pixel, the thumb's height of the same parity as its line's
@@ -14,13 +16,22 @@
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
   import { thumbPosition } from "@helpermedia/beamer-controls";
+  import type { ResetGesture } from "@helpermedia/beamer-controls";
   import { parameterView, Slider } from "@helpermedia/beamer-svelte";
   import { withMinus } from "../format";
   import { FLOOR_DB } from "../meters";
   import { atMostSameParity, measureDevicePixels, sameParity } from "../pixels";
   import type { DevicePixels } from "../pixels";
 
-  let { parameter, level, name }: { parameter: Parameter; level: number; name: string } = $props();
+  let {
+    parameter,
+    level,
+    name,
+    ondblclick,
+  }: { parameter: Parameter; level: number; name: string; ondblclick?: () => void } = $props();
+
+  // A double click types a value, so only a click with a modifier resets.
+  const TYPING_RESETS: ResetGesture[] = ["ctrl-click", "alt-click"];
 
   // The thumb's height in design pixels: the face above and below its line
   // grows with it.
@@ -28,7 +39,7 @@
 
   // The track's height in design pixels, the height of the whole fader
   // with its scale and meter (its CSS height below).
-  const TRACK_HEIGHT = 208;
+  const TRACK_HEIGHT = 200;
 
   // The thumb's length as a part of the track's, as the slider takes it.
   // Its center travels from half of it in from the bottom to half of it in
@@ -100,7 +111,7 @@
     {/each}
   </div>
 
-  <Slider {parameter} thumbLength={THUMB} class="group h-full w-6 outline-none" bind:ref={track}>
+  <Slider {parameter} thumbLength={THUMB} reset={TYPING_RESETS} {ondblclick} class="group h-full w-6 outline-none" bind:ref={track}>
     {#snippet children({ position })}
       {#if box}
         {@const d = draw(box, position)}

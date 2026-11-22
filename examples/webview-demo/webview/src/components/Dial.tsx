@@ -53,7 +53,8 @@ const trackPath = describeArc(ARC_START, ARC_START - ARC_SWEEP);
 //   - Scroll wheel, one undo step per scroll.
 //   - Arrow keys once focused. Focus from the keyboard (Tab, or keys after
 //     a click) brightens the track.
-//   - Cmd+click or Ctrl+click: reset to default.
+//   - Cmd+click or Option+click (Ctrl+click or Alt+click outside macOS):
+//     reset to default.
 // Double-click on the dial or its value types a value, which the parameter
 // itself parses.
 function Dial({ parameterId, size = 64, label, className }: DialProps) {
@@ -120,7 +121,7 @@ function Dial({ parameterId, size = 64, label, className }: DialProps) {
         drag={pickDrag}
         arcStart={ARC_START_DEGREES}
         arcSweep={ARC_SWEEP_DEGREES}
-        reset={["modifier-click"]}
+        reset={["ctrl-click", "alt-click"]}
         aria-label={label}
         className="group cursor-default outline-none"
         style={{ width: size, height: size }}

@@ -10,11 +10,13 @@
   import { TextField as TextFieldControl } from "@helpermedia/beamer-svelte";
   import { withMinus } from "../format";
 
-  let { parameter }: { parameter: Parameter } = $props();
+  // `ref` is the `<input>`, for its slider to open it on a double click.
+  let { parameter, ref = $bindable(null) }: { parameter: Parameter; ref?: HTMLInputElement | null } = $props();
 </script>
 
 <TextFieldControl
   {parameter}
+  bind:ref
   text={(shown) => withMinus(shown.text())}
   title="Type a value"
   class="w-full cursor-default rounded-[0.1875rem] border border-transparent px-0 py-[0.0625rem] text-center text-xs font-medium tabular-nums text-paper outline-none hover:border-neutral-700 data-[keyboard-focus]:border-brand-blue data-[typing]:cursor-text data-[typing]:border-brand-blue data-[typing]:bg-panel data-[typing]:font-normal data-[typing]:select-text"

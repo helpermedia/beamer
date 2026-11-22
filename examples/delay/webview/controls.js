@@ -23,6 +23,18 @@ const ARC_SWEEP = 270;
 const RADIUS = 20;
 const CENTER = 26;
 
+// Whether the page runs on an Apple platform, where Command is the
+// shortcut key and a click with Control held is a right click.
+const APPLE = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+
+// Whether a press resets the value: Command or Option held on macOS,
+// Control or Alt elsewhere. On macOS a click with Control held opens the
+// context menu, never a reset.
+function resetsByClick(event) {
+    if (APPLE && event.ctrlKey) return false;
+    return (APPLE ? event.metaKey : event.ctrlKey) || event.altKey;
+}
+
 function clamp(normalized) {
     return Math.min(1, Math.max(0, normalized));
 }
@@ -57,8 +69,10 @@ function arcPath(part) {
 }
 
 // A dial for the parameter `id` in `container`. Drag up and down (shift for
-// fine steps), scroll, use the arrow keys or double click to reset. A click
-// on the value lets the user type one, which the parameter itself parses.
+// fine steps), scroll or use the arrow keys. A click with Command or Option
+// held (Control or Alt outside macOS) resets it. A double click on the dial
+// or a click on its value lets the user type one, which the parameter
+// itself parses.
 export function dial(container, id) {
     const info = parameters.info(id);
     container.className = "dial";
@@ -106,6 +120,10 @@ export function dial(container, id) {
         // which takes the release.
         if (event.button !== 0 || lastY !== null) return;
         settleWheel();
+        if (resetsByClick(event)) {
+            edit(id, info.defaultValue);
+            return;
+        }
         svg.setPointerCapture(event.pointerId);
         lastY = event.clientY;
         parameters.beginEdit(id);
@@ -128,11 +146,6 @@ export function dial(container, id) {
     // On macOS a click with Control held opens the context menu, which
     // takes the release: end the drag it began.
     svg.addEventListener("contextmenu", release);
-
-    svg.addEventListener("dblclick", () => {
-        settleWheel();
-        edit(id, info.defaultValue);
-    });
 
     // Scrolling moves the value by the distance, as far as a drag would. A
     // trackpad sends many small events, so one gesture lasts until the
@@ -182,6 +195,8 @@ export function dial(container, id) {
     // Typing a value: the text field takes the place of the value until
     // Enter sets it or Escape or a click elsewhere leaves it.
     function startTyping() {
+        // Typing already: the value's button is out of the page.
+        if (!text.isConnected) return;
         settleWheel();
         const input = document.createElement("input");
         input.className = "dial-text";
@@ -212,9 +227,11 @@ export function dial(container, id) {
         });
         input.addEventListener("blur", () => finish(false, false));
         button.replaceWith(input);
+        input.focus();
         input.select();
     }
     text.addEventListener("click", startTyping);
+    svg.addEventListener("dblclick", startTyping);
 
     parameters.on(id, render);
     render();

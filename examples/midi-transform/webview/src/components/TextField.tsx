@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import type { Parameter } from "@helpermedia/beamer-api";
 import { TextField as TextFieldControl } from "@helpermedia/beamer-react";
 import { withMinus } from "../format";
@@ -7,6 +8,8 @@ interface TextFieldProps {
   // The name of the control, for the label of the field, when it is not
   // the parameter's own.
   label?: string;
+  // The `<input>`, for its dial to open it on a double click.
+  ref?: Ref<HTMLInputElement>;
 }
 
 // The text field of a control: the look over beamer-react's TextField,
@@ -14,10 +17,11 @@ interface TextFieldProps {
 // sets what the user typed, read by the parameter's own parser, so "-12",
 // "-12 dB" and "250ms" all work. Escape leaves the value as it was. A text
 // left as it was sets nothing, so no undo step.
-function TextField({ parameter, label }: TextFieldProps) {
+function TextField({ parameter, label, ref }: TextFieldProps) {
   return (
     <TextFieldControl
       parameter={parameter}
+      ref={ref}
       text={(shown) => withMinus(shown.text())}
       title="Type a value"
       aria-label={label === undefined ? undefined : `${label} value`}

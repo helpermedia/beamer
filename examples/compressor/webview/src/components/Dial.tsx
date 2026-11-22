@@ -1,3 +1,6 @@
+import { useRef } from "react";
+import { openTextField } from "@helpermedia/beamer-controls";
+import type { ResetGesture } from "@helpermedia/beamer-controls";
 import { Dial as DialControl, useParameter } from "@helpermedia/beamer-react";
 import type { ParameterId } from "@helpermedia/beamer-api";
 import TextField from "./TextField";
@@ -27,6 +30,9 @@ function ringPath(part: number): string {
 
 const TRACK = ringPath(1);
 
+// A double click types a value, so only a click with a modifier resets.
+const TYPING_RESETS: ResetGesture[] = ["ctrl-click", "alt-click"];
+
 interface DialProps {
   parameterId: ParameterId;
   // The name under the dial, the parameter's own name by default.
@@ -35,11 +41,16 @@ interface DialProps {
 
 // A dial for a continuous parameter: the look over beamer-react's Dial,
 // which brings the input: drag up and down (finer with shift), scroll,
-// arrow keys once focused and double click to reset. A click on the value
-// types one.
+// arrow keys once focused, a Command or Option click (Control or Alt
+// outside macOS) to reset. A double click on the dial or a click on the
+// value types one.
 function Dial({ parameterId, label }: DialProps) {
   const { parameter, info } = useParameter(parameterId);
   const name = label ?? info?.name ?? parameterId;
+  const field = useRef<HTMLInputElement>(null);
+  const typeValue = () => {
+    if (field.current) openTextField(field.current);
+  };
 
   return (
     <div className="flex w-21 flex-col items-center portrait:w-20">
@@ -47,6 +58,8 @@ function Dial({ parameterId, label }: DialProps) {
         parameter={parameter}
         arcStart={ARC_START}
         arcSweep={ARC_SWEEP}
+        reset={TYPING_RESETS}
+        onDoubleClick={typeValue}
         aria-label={label}
         className="group size-12 outline-none"
       >
@@ -71,7 +84,7 @@ function Dial({ parameterId, label }: DialProps) {
         }}
       </DialControl>
       <span className="mt-1 text-[0.6875rem] text-neutral-400">{name}</span>
-      <TextField parameter={parameter} label={label} />
+      <TextField parameter={parameter} label={label} ref={field} />
     </div>
   );
 }

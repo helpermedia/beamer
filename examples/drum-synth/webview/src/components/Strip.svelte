@@ -1,10 +1,12 @@
 <!--
   The channel strip of one drum: its name with a light that flashes on each
-  hit, its balance, the fader of its level with its meter, the level as a
-  value to type and the output it plays through.
+  hit, its balance with its value to type, the fader of its level with its
+  meter, the level as a value to type and the output it plays through. A
+  double click on the balance or the fader opens its value to type one.
 -->
 <script lang="ts">
   import { parameter } from "@helpermedia/beamer-api";
+  import { openTextField } from "@helpermedia/beamer-controls";
   import { parameterView } from "@helpermedia/beamer-svelte";
   import Balance from "./Balance.svelte";
   import type { Drum } from "../drums";
@@ -22,6 +24,13 @@
   // arrive with `ready`.
   const levelView = $derived(parameterView(levelParameter));
   const name = $derived(levelView.info?.name ?? drum.levelParameterId);
+
+  // A double click on the balance or the fader types a value in its field.
+  let panField: HTMLInputElement | null = $state(null);
+  let levelField: HTMLInputElement | null = $state(null);
+  const typeIn = (field: HTMLInputElement | null) => {
+    if (field) openTextField(field);
+  };
 </script>
 
 <section aria-label={name} class="flex w-30 flex-col items-center rounded-lg bg-well px-2 pt-2 pb-2.5 ring-1 ring-neutral-800 ring-inset">
@@ -36,19 +45,23 @@
     <h2 class="text-xs font-semibold">{name}</h2>
   </div>
 
-  <div class="mt-2.5 w-full">
-    <Balance parameter={panParameter} />
-  </div>
-
-  <div class="mt-3">
-    <Level parameter={levelParameter} {level} {name} />
-  </div>
-
   <div class="mt-2 w-full">
-    <TextField parameter={levelParameter} />
+    <Balance parameter={panParameter} ondblclick={() => typeIn(panField)} />
   </div>
 
-  <p class="mt-2 text-[0.625rem] text-neutral-500">Output</p>
+  <div class="mt-0.5 w-full">
+    <TextField parameter={panParameter} bind:ref={panField} />
+  </div>
+
+  <div class="mt-1">
+    <Level parameter={levelParameter} {level} {name} ondblclick={() => typeIn(levelField)} />
+  </div>
+
+  <div class="mt-1.5 w-full">
+    <TextField parameter={levelParameter} bind:ref={levelField} />
+  </div>
+
+  <p class="mt-1.5 text-[0.625rem] text-neutral-500">Output</p>
   <div class="mt-1 w-full">
     <Output parameter={outputParameter} />
   </div>

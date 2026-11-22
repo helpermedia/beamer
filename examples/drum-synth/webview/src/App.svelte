@@ -113,7 +113,7 @@
           <Strip {drum} {index} level={$meters[index]} />
         {/each}
       </div>
-      <p class="mt-3 text-[0.6875rem] text-neutral-500">
+      <p class="mt-2 text-[0.6875rem] text-neutral-500">
         To start with, every drum plays through Output 1, the main output. Send a drum to an output of its own under its
         fader, then turn that output on in the host.
       </p>

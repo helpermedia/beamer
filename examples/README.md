@@ -98,7 +98,7 @@ A bar with the plugin's name and the Beamer logo, then the transfer curve: thres
 - dB-domain envelope processing
 - Two value senders from the audio thread: the meters (held peaks that fall by 20 dB a second, sent with every block until they rest, so that the editor lets them fall on its own when the host stops calling the plugin) and the status (sample rate, whether the detector keys on the sidechain), whose first value `prepare()` sets
 - An editor that works out from the parameters what it can (the transfer curve, the latency in samples), so it follows a dial at once, also while the host does not run the processor
-- The packages for web UIs: `beamer-controls` for the dials (vertical drag, wheel, keys, double click to reset), the text fields, the switches, the radio groups and the falling levels of the meters, `beamer-react` components for them and hooks for the parameters and sender values, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the dials (vertical drag, wheel, keys, Cmd/Ctrl-click or Option/Alt-click to reset, double click to type a value), the text fields, the switches, the radio groups and the falling levels of the meters, `beamer-react` components for them and hooks for the parameters and sender values, used from the bun workspace
 - Enum choices from the parameter (`valueTexts`) as buttons for the ratio, from which the editor also reads the ratio for its curve
 
 ---
@@ -178,7 +178,7 @@ A line with the plugin's name and the Beamer logo, then the delay time in effect
 - `Model::LAYOUTS` with stereo, mono and mono to stereo layouts (a mono input feeds both delay lines)
 - A web UI in plain HTML, CSS and JavaScript modules, working on `__BEAMER__` directly
 - A `WebViewValueSender` that sends the host's tempo from the audio thread only when it changes
-- Dials with drag, fine drag, wheel, arrow keys, reset on double click and typed values (`_beamer/parameterTextToNormalized`)
+- Dials with drag, fine drag, wheel, arrow keys, reset on Cmd/Ctrl-click or Option/Alt-click and values typed after a double click (`_beamer/parameterTextToNormalized`)
 - Buttons for the choices of an enum parameter, named by its `valueTexts`
 
 ---
@@ -408,7 +408,7 @@ Gain and pan effect with a web-based editor built with React, Vite and Tailwind.
 - `__BEAMER__.invoke()` for request/response calls from JS to Rust
 - A `State` field: read and set from the web UI with `useStateField`, read on the audio thread with a `HandoverReader`, saved with the plugin state
 - `#[beamer::export]` macro embedding `webview/dist/` assets at compile time
-- The packages for web UIs: `beamer-controls` for the dials (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd-click or Ctrl-click to reset), the text fields and the falling levels of the output meter, `beamer-react` components for them and hooks for the parameters and the `State` field, used from the bun workspace
+- The packages for web UIs: `beamer-controls` for the dials (the handle follows the pointer around the arc, vertical drag elsewhere, wheel, keys, Cmd/Ctrl-click or Option/Alt-click to reset), the text fields and the falling levels of the output meter, `beamer-react` components for them and hooks for the parameters and the `State` field, used from the bun workspace
 - A dial drawn in SVG inside beamer-react's `Dial`, which brings its input
 - Bipolar arc rendering for the pan dial
 - DAW undo grouping: each drag, scroll, key, reset or typed value is one undo step

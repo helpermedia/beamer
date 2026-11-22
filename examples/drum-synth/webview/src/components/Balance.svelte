@@ -3,8 +3,10 @@
   beamer-svelte's Slider with `orientation="horizontal"`, between an L and
   an R. A groove with a mark in the middle, blue from the middle to the
   thumb, the thumb drawn with its center at `position`. Drag the thumb or
-  the groove (finer with shift), scroll, use the arrow keys once focused,
-  double click to set it back to where the drum starts.
+  the groove (finer with shift), scroll, use the arrow keys once focused, a
+  Command or Option click (Control or Alt outside macOS) to set it back to
+  where the drum starts. A double click calls `ondblclick`, for the strip
+  to open the balance's field to type one.
 
   The drawing is an SVG in device pixels, every edge on a whole pixel, the
   thumb's width of the same parity as its line's, so the line sits in the
@@ -12,11 +14,15 @@
 -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
+  import type { ResetGesture } from "@helpermedia/beamer-controls";
   import { Slider } from "@helpermedia/beamer-svelte";
   import { atMostSameParity, measureDevicePixels, sameParity } from "../pixels";
   import type { DevicePixels } from "../pixels";
 
-  let { parameter }: { parameter: Parameter } = $props();
+  let { parameter, ondblclick }: { parameter: Parameter; ondblclick?: () => void } = $props();
+
+  // A double click types a value, so only a click with a modifier resets.
+  const TYPING_RESETS: ResetGesture[] = ["ctrl-click", "alt-click"];
 
   // The track's width in design pixels (its CSS width below); the
   // drawing's sizes are in them too.
@@ -82,6 +88,8 @@
     {parameter}
     orientation="horizontal"
     thumbLength={THUMB}
+    reset={TYPING_RESETS}
+    {ondblclick}
     class="group outline-none"
     style="width: {WIDTH / 16}rem; height: {THUMB_HEIGHT / 16}rem"
     bind:ref={track}

@@ -1,11 +1,14 @@
 <!--
   A dial for a continuous parameter with its name and value beside it: the
   family's classic look over beamer-svelte's Dial, which brings the input:
-  drag up and down (finer with shift), scroll, arrow keys once focused and
-  double click to reset. A click on the value types one.
+  drag up and down (finer with shift), scroll, arrow keys once focused, a
+  Command or Option click (Control or Alt outside macOS) to reset. A double
+  click on the dial or a click on the value types one.
 -->
 <script lang="ts">
   import type { Parameter } from "@helpermedia/beamer-api";
+  import { openTextField } from "@helpermedia/beamer-controls";
+  import type { ResetGesture } from "@helpermedia/beamer-controls";
   import { Dial as DialControl, parameterView } from "@helpermedia/beamer-svelte";
   import TextField from "./TextField.svelte";
 
@@ -19,7 +22,15 @@
   const CENTER = SIZE / 2;
   const RING = 21;
 
+  // A double click types a value, so only a click with a modifier resets.
+  const TYPING_RESETS: ResetGesture[] = ["ctrl-click", "alt-click"];
+
   let { parameter }: { parameter: Parameter } = $props();
+
+  let field: HTMLInputElement | null = $state(null);
+  const typeValue = () => {
+    if (field) openTextField(field);
+  };
 
   const view = $derived(parameterView(parameter));
   const name = $derived(view.info?.name ?? parameter.id);
@@ -41,7 +52,15 @@
 </script>
 
 <div class="flex items-center gap-3">
-  <DialControl {parameter} arcStart={ARC_START} arcSweep={ARC_SWEEP} aria-label={name} class="group size-11 outline-none">
+  <DialControl
+    {parameter}
+    arcStart={ARC_START}
+    arcSweep={ARC_SWEEP}
+    reset={TYPING_RESETS}
+    ondblclick={typeValue}
+    aria-label={name}
+    class="group size-11 outline-none"
+  >
     {#snippet children({ value, angle })}
       {@const pointer = [...pointAt(angle, 7), ...pointAt(angle, 14)]}
       <svg viewBox="0 0 {SIZE} {SIZE}" class="size-full">
@@ -61,6 +80,6 @@
   </DialControl>
   <div class="flex flex-col items-start">
     <span class="text-xs text-neutral-400">{name}</span>
-    <TextField {parameter} />
+    <TextField {parameter} bind:ref={field} />
   </div>
 </div>
