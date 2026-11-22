@@ -102,7 +102,8 @@ pub enum Formatter {
     /// Pan formatter for stereo position.
     ///
     /// Input is -1.0 (left) to +1.0 (right).
-    /// Display: "L50", "C", "R50"
+    /// Display: "L 50", "C", "R 50". Parses those, "50L", "50R" and plain
+    /// numbers on the shown scale: "-50" is L 50, "1" is R 1.
     Pan,
 
     /// Ratio formatter for compressors.
@@ -292,12 +293,15 @@ impl Formatter {
             }
 
             Formatter::Pan => {
-                if value.abs() < 0.005 {
+                // The side follows the rounded percent, so a value that
+                // rounds to 0 shows "C", never "L 0".
+                let percent = (value * 100.0).round();
+                if percent == 0.0 {
                     "C".to_string()
-                } else if value < 0.0 {
-                    format!("L {:.0}", value.abs() * 100.0)
+                } else if percent < 0.0 {
+                    format!("L {:.0}", -percent)
                 } else {
-                    format!("R {:.0}", value * 100.0)
+                    format!("R {:.0}", percent)
                 }
             }
 
@@ -393,28 +397,27 @@ impl Formatter {
             Formatter::Percent { .. } => strip_unit(s, "%").parse::<f64>().ok().map(|v| v / 100.0),
 
             Formatter::Pan => {
-                let s_upper = s.to_uppercase();
-                if s_upper == "C" || s_upper == "CENTER" || s_upper == "0" {
+                // The side is a letter before or after the number ("L 30",
+                // "30L"). "C" or "center" is the middle. A plain number is
+                // on the scale the text shows: -100 (left) to 100 (right),
+                // so "30" is R 30 and "1" is R 1.
+                let lower = s.to_ascii_lowercase();
+                if matches!(lower.as_str(), "c" | "center" | "centre") {
                     return Some(0.0);
                 }
-
-                if let Some(left) = s_upper.strip_prefix('L') {
-                    return left.trim().parse::<f64>().ok().map(|v| -v / 100.0);
+                let sided = [('l', -1.0), ('r', 1.0)].into_iter().find_map(|(letter, side)| {
+                    let number = lower.strip_prefix(letter).or_else(|| lower.strip_suffix(letter))?;
+                    Some((side, number))
+                });
+                let (side, number) = sided.unwrap_or((1.0, lower.as_str()));
+                let amount: f64 = number.trim().parse().ok()?;
+                // A side takes the distance from the middle: "L -30" is
+                // no position.
+                if sided.is_some() && number.trim().starts_with('-') {
+                    return None;
                 }
-
-                if let Some(right) = s_upper.strip_prefix('R') {
-                    return right.trim().parse::<f64>().ok().map(|v| v / 100.0);
-                }
-
-                // Try parsing as raw number (-100 to +100 or -1 to +1)
-                if let Ok(v) = s.parse::<f64>() {
-                    if v.abs() > 1.0 {
-                        return Some(v / 100.0); // Assume -100 to +100
-                    }
-                    return Some(v); // Assume -1 to +1
-                }
-
-                None
+                // No negative zero for "L 0".
+                Some(side * amount / 100.0 + 0.0)
             }
 
             Formatter::Ratio { .. } => {
@@ -873,6 +876,36 @@ mod tests {
         assert_eq!(boolean.parse(" 0.000 "), Some(0.0));
         assert_eq!(boolean.parse("0.5"), Some(0.0));
         assert_eq!(boolean.parse("maybe"), None);
+    }
+
+    #[test]
+    fn test_pan_parse() {
+        let pan = Formatter::Pan;
+        // What the formatter writes reads back.
+        for value in [-1.0, -0.3, 0.0, 0.25, 1.0] {
+            assert_eq!(pan.parse(&pan.text(value)), Some(value), "{}", pan.text(value));
+        }
+        // The side follows the rounded percent: no "L 0" or "R 0".
+        assert_eq!(pan.text(-0.004), "C");
+        assert_eq!(pan.text(0.004), "C");
+        assert_eq!(pan.text(-0.006), "L 1");
+        assert_eq!(pan.text(0.006), "R 1");
+        // The side before or after the number, in either case.
+        for (text, value) in [("L30", -0.3), ("l 30", -0.3), ("30L", -0.3), ("30 r", 0.3), ("R+30", 0.3), ("L 0", 0.0)] {
+            assert_eq!(pan.parse(text), Some(value), "{text}");
+        }
+        // A plain number is on the shown scale, -100 to 100.
+        for (text, value) in [("30", 0.3), ("-30", -0.3), ("+30", 0.3), ("1", 0.01), ("-1", -0.01), ("0", 0.0), ("100", 1.0)] {
+            assert_eq!(pan.parse(text), Some(value), "{text}");
+        }
+        for text in ["C", "c", "Center", "centre"] {
+            assert_eq!(pan.parse(text), Some(0.0), "{text}");
+        }
+        // No negative zero.
+        assert!(pan.parse("L 0").unwrap().is_sign_positive());
+        for text in ["", "L", "R", "L -30", "R-30", "LR30", "left", "30%"] {
+            assert_eq!(pan.parse(text), None, "{text}");
+        }
     }
 
     #[test]

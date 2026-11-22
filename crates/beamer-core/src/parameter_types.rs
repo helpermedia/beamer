@@ -899,7 +899,7 @@ impl FloatParameter {
     /// Create a pan parameter.
     ///
     /// -1.0 is full left, +1.0 full right and 0.0 center.
-    /// Display: "L50", "C", "R50"
+    /// Display: "L 50", "C", "R 50"
     ///
     /// The parameter ID defaults to 0 and should be set via [`with_id`](Self::with_id)
     /// or by `#[beamer::model]` and `#[beamer::group]`.
