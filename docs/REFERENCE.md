@@ -774,6 +774,45 @@ pub struct SamplerModel {
 
 Audio Units have no such call, so their wrappers do not tell the host. The nearest thing, a change notification for `kAudioUnitProperty_ClassInfo` in an AUv2 or for the `fullState` property in an AUv3, does not make Reaper mark the project as modified. In practice both hosts that were tried still ask: Logic asks to save on closing even when nothing changed; Reaper marks the project as modified whenever a plugin window closes. The fields are always saved with the plugin state when the user saves the project. A plugin that needs every Audio Unit host to ask keeps such a value in a parameter instead.
 
+#### Curves
+
+A `Curve` is a curve through points the user places, for a `State` field: a velocity curve, the response of a controller, a transfer function. It maps a value from 0.0 to 1.0 to another one from 0.0 to 1.0. Between its points it runs straight (`CurveShape::Linear`) or smooth (`CurveShape::Smooth`, the default). The smooth shape is a monotone cubic (Fritsch-Carlson): smooth at every point, but between two points it stays between their values, so it never leaves 0.0 to 1.0 and never falls where the points rise. Before the first point the curve holds that point's value, after the last one too.
+
+```rust
+#[beamer::group]
+pub struct VelocityGroup {
+    #[parameter(id = "enabled", name = "Enabled", default = true)]
+    pub enabled: BoolParameter,
+
+    // A straight line from (0, 0) to (1, 1) by default, which changes nothing.
+    #[state(id = "curve")]
+    pub curve: State<Curve>,
+}
+
+// In prepare():
+velocity_curve: self.velocity.curve.reader(),
+
+// In process_midi(): allocates nothing and takes no lock.
+let curve = self.velocity_curve.latest();
+let velocity = curve.value_at(note_on.velocity as f64) as f32;
+```
+
+| Item | Description |
+|------|-------------|
+| `Curve::new(shape, points)` | A curve, or a `CurveError` when the points make none |
+| `Curve::identity()` | The straight line from (0, 0) to (1, 1), also `Curve::default()` |
+| `curve.value_at(x)` | The value at `x`, from 0.0 to 1.0. A NaN gives the value of the first point |
+| `curve.points()`, `curve.shape()` | The points sorted by x, the shape |
+| `CurvePoint::new(x, y)` | A point, both coordinates from 0.0 to 1.0 |
+
+**Checked on the way in:** a curve needs at least two points, sorted by x with no two closer than `Curve::MIN_POINT_DISTANCE` (1e-9), both coordinates from 0.0 to 1.0. `Curve::new()` checks this and so does loading from JSON, so a saved state or a web UI cannot hand the audio thread a broken curve. A saved entry that does not fit is logged and the field goes back to its default. A value the page sets that does not fit is answered with the value in effect.
+
+**JSON:** a curve is saved and reaches the page as its shape and its points: `{"shape":"smooth","points":[{"x":0.0,"y":0.0},{"x":1.0,"y":1.0}]}`. The generated model types of a page declare `Curve`, `CurveShape` and `CurvePoint`, with no derive in the plugin.
+
+**Limits:** both axes are 0.0 to 1.0; another range, such as -1.0 to 1.0 for a waveshaper or note numbers, is mapped by the plugin. A curve is a function of x: each input has one output, so no loops or free paths. `value_at()` is cheap (a search among the points and a few multiplications), so it can run per sample; a plugin that calls it for every sample of a block may fill a table of its own when the curve changes.
+
+**In the editor:** the page draws the curve and edits its points itself, then sets the field as a whole. To draw what the processor plays it computes the same shapes: the editor of the `midi-transform` example has them in TypeScript (`webview/src/curve.ts`) together with the edits of a point editor that keep the points valid. Its tests check them against values of the Rust tests.
+
 #### Low-Level Traits
 
 For manual control, implement `Parameters` (the parameters: iteration, ids, groups, smoothing; `count()`, `iter()` and `by_id()` are required), `ParameterGroups` (the group tree; an empty impl is enough without groups), `Saved`, `WebViewFields`, `WebViewDispatch` (a model only, not a group) and `Default` directly. An empty `impl Saved` saves the parameters under their numeric ids. If the struct has `State` fields, override in `Saved`: `save_entries()` and `load_entries()` to save and load them as well (`writer.state(path, &field)` and `entries.load_state(path, &field)`), `state_generation()` to return the sum of their `generation()`s and `for_each_state()` to visit each with its path. A web UI reaches them through that method. An empty `impl WebViewFields` is for a struct without a queue or declared senders and events; a struct with a `WebViewEventQueue` returns it from `webview_queue()`; one with declared fields connects them in `connect_webview()`. Its `describe_model_types()` lists the `State` fields, senders and events with their types for the page's generated model types (see [Model Types](WEBVIEW.md#model-types)). The default lists none, so a page with generated model types can name none of them: list each with `types.state(join_path(prefix, "pan_law"), std::any::type_name::<PanLaw>(), None, |types| Some(PanLaw::type_script(types)))`. `types.value()`, `types.stream()` and `types.event()` take the same arguments. An empty `impl WebViewDispatch` rejects every `invoke()` call of the web UI and ignores its events; a model with a `WebViewHandler` forwards to it instead. The default `assign_ids()` of `Parameters` does nothing, so hand-written parameters get their ids with `.with_id()`.

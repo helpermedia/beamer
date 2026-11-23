@@ -93,7 +93,7 @@
 //! [repository](https://github.com/helpermedia/beamer) also has the reference
 //! and the example plugins.
 
-// Re-export sub-crates
+// Re-export sub-crates.
 pub use beamer_core as core;
 pub use beamer_webview as webview;
 
@@ -129,7 +129,7 @@ pub mod vst3 {
 #[cfg(feature = "au")]
 pub use beamer_au as au_impl;
 
-// Re-export the macros when the feature is enabled
+// Re-export the macros when the feature is enabled.
 #[cfg(feature = "derive")]
 pub use beamer_macros::EnumParameter;
 #[cfg(feature = "derive")]
@@ -231,59 +231,61 @@ macro_rules! __allocation_check_allocator {
 /// use beamer::prelude::*;
 /// ```
 pub mod prelude {
-    // Core traits and types
+    // Core traits and types.
     // The model of a plugin lives in an `Arc`.
     pub use std::sync::Arc;
 
     pub use beamer_core::{
-        // Asset types
+        // Asset types.
         EmbeddedAsset, EmbeddedAssets,
-        // Buffer types
+        // Buffer types.
         AuxiliaryBuffers, AuxInput, AuxOutput, Buffer,
-        // Bypass handling
+        // Bypass handling.
         BypassAction, BypassHandler, BypassState, CrossfadeCurve,
-        // Sample trait for generic f32/f64 processing
+        // Sample trait for generic f32/f64 processing.
         Sample,
-        // Traits
+        // Traits.
         Model, Processor, Saved,
-        // Plugin setup types (composable)
+        // Plugin setup types (composable).
         PluginSetup, SampleRate, MaxBufferSize, MainInputChannels, MainOutputChannels,
         ActiveBuses, ProcessMode,
-        // Bus configuration
+        // Bus configuration.
         BusInfo, BusLayout, BusType, ChannelSet, Layout,
-        // Parameter metadata
+        // Parameter metadata.
         NoParameters, ParameterFlags, ParameterInfo,
-        // Factory presets
+        // Factory presets.
         Preset,
-        // Parameter types
+        // Parameter types.
         BoolParameter, EnumParameter, EnumParameterValue, FloatParameter, IntParameter, Formatter, MiddleC, ParameterRef, Parameters,
-        // MIDI CC configuration (framework manages runtime state)
+        // MIDI CC configuration (framework manages runtime state).
         MidiCcConfig,
-        // Parameter smoothing
+        // Parameter smoothing.
         Smoother, SmoothingStyle,
-        // Values for the audio thread and state beyond parameters
+        // Curves through points, such as a velocity curve.
+        Curve, CurveError, CurvePoint, CurveShape,
+        // Values for the audio thread and state beyond parameters.
         Handover, HandoverReader, State,
-        // Parameter group system
+        // Parameter group system.
         group_id, GroupId, GroupInfo, ParameterGroups, ROOT_GROUP_ID,
-        // Range mapping
+        // Range mapping.
         LinearMapper, LogMapper, LogOffsetMapper, PowerMapper, RangeMapper,
-        // Error types
+        // Error types.
         PluginError, PluginResult,
-        // Geometry
+        // Geometry.
         Rect, Size,
-        // MIDI types
+        // MIDI types.
         ChannelPressure, ControlChange, MidiBuffer, MidiChannel, MidiEvent, MidiEventKind,
         MidiNote, NoteId, NoteOff, NoteOn, ParameterChange, ParameterNumber, ParameterNumberKind,
         PitchBend, PolyPressure, ProgramChange,
-        // Process context and transport
+        // Process context and transport.
         FrameRate, ProcessContext, Transport,
-        // FourCharCode
+        // FourCharCode.
         FourCharCode,
-        // For the types kept in a `State`
+        // For the types kept in a `State`.
         serde,
     };
 
-    // The web UI: events and values for it, the handler of its calls
+    // The web UI: events and values for it, the handler of its calls.
     pub use beamer_webview::{
         serde_json, WebViewEvent, WebViewEventQueue, WebViewFields, WebViewHandler, WebViewStream,
         WebViewStreamSender, WebViewValue, WebViewValueSender,
@@ -292,10 +294,10 @@ pub mod prelude {
     // The TypeScript of the types the web UI receives.
     pub use beamer_webview::{TsType, TypeScript, TypeScriptTypes};
 
-    // Plugin configuration
+    // Plugin configuration.
     pub use beamer_core::{Config, config::Category, config::Subcategory};
 
-    // Unified export macro
+    // Unified export macro.
     pub use crate::export_plugin;
 
     // The enum derive (when the feature is enabled). It shares its name with

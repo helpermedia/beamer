@@ -609,7 +609,7 @@ The packages read the file through module augmentation (see [TypeScript Declarat
 
 ### Types from Rust
 
-Each struct and enum a typed page receives needs `#[derive(TypeScript)]` next to its serde derives: the types of `State` fields, of what senders and events carry and of a handler's arguments and results. Booleans, numbers, strings, `Option`, `Vec`, arrays, tuples and maps of these need none. `TypeScript` comes with `beamer::prelude::*`.
+Each struct and enum a typed page receives needs `#[derive(TypeScript)]` next to its serde derives: the types of `State` fields, of what senders and events carry and of a handler's arguments and results. Booleans, numbers, strings, `Option`, `Vec`, arrays, tuples and maps of these need none, nor do Beamer's own types for a `State`, such as `Curve`. `TypeScript` comes with `beamer::prelude::*`.
 
 ```rust
 /// The output level as the meter shows it.

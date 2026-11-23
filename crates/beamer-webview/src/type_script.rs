@@ -774,6 +774,64 @@ impl TypeScript for serde_json::Map<String, serde_json::Value> {
 }
 
 // =============================================================================
+// Beamer types
+// =============================================================================
+
+// The types of beamer-core that a `State` can hold. beamer-core does not
+// know this trait, so they are declared here as the derive would declare
+// them from their serde attributes.
+
+impl TypeScript for beamer_core::CurvePoint {
+    fn type_script(types: &mut TypeScriptTypes) -> TsType {
+        types.named::<Self>(
+            "CurvePoint",
+            Some("A point of a `Curve`, both coordinates from 0.0 to 1.0."),
+            |types| {
+                TsType::Object(vec![
+                    __private::field("x", Some("The value that goes in."), false, f64::type_script(types)),
+                    __private::field("y", Some("The value that comes out."), false, f64::type_script(types)),
+                ])
+            },
+        )
+    }
+}
+
+impl TypeScript for beamer_core::CurveShape {
+    fn type_script(types: &mut TypeScriptTypes) -> TsType {
+        types.named::<Self>("CurveShape", Some("How a `Curve` runs between its points."), |_| {
+            TsType::Union(vec![
+                __private::member(
+                    Some("Straight lines from point to point."),
+                    __private::literal("linear"),
+                ),
+                __private::member(
+                    Some("Smooth through every point without overshooting them: a monotone cubic."),
+                    __private::literal("smooth"),
+                ),
+            ])
+        })
+    }
+}
+
+impl TypeScript for beamer_core::Curve {
+    fn type_script(types: &mut TypeScriptTypes) -> TsType {
+        types.named::<Self>(
+            "Curve",
+            Some(
+                "A curve through points, from 0.0 to 1.0 in and out.\n\
+                 At least two points, sorted by x and none at the same x.",
+            ),
+            |types| {
+                TsType::Object(vec![
+                    __private::field("shape", None, false, beamer_core::CurveShape::type_script(types)),
+                    __private::field("points", None, false, <Vec<beamer_core::CurvePoint>>::type_script(types)),
+                ])
+            },
+        )
+    }
+}
+
+// =============================================================================
 // For generated code
 // =============================================================================
 
@@ -1136,6 +1194,33 @@ mod tests {
                 ])
             })
         }
+    }
+
+    #[test]
+    fn test_curve_is_what_serde_writes() {
+        let (inline, types) = type_of::<beamer_core::Curve>();
+        assert_eq!(inline, "Curve");
+        assert_eq!(
+            types.render_declarations(),
+            "/**\n \
+             * A curve through points, from 0.0 to 1.0 in and out.\n \
+             * At least two points, sorted by x and none at the same x.\n \
+             */\n\
+             export interface Curve {\n  shape: CurveShape;\n  points: CurvePoint[];\n}\n\
+             \n\
+             /** How a `Curve` runs between its points. */\n\
+             export type CurveShape =\n  \
+             /** Straight lines from point to point. */\n  \
+             | \"linear\"\n  \
+             /** Smooth through every point without overshooting them: a monotone cubic. */\n  \
+             | \"smooth\";\n\
+             \n\
+             /** A point of a `Curve`, both coordinates from 0.0 to 1.0. */\n\
+             export interface CurvePoint {\n  \
+             /** The value that goes in. */\n  x: number;\n  \
+             /** The value that comes out. */\n  y: number;\n}\n"
+        );
+        assert!(types.errors().is_empty());
     }
 
     #[test]
