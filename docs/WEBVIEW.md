@@ -707,16 +707,16 @@ Nothing counts as sent when an editor opens, so its first tick sends all values,
 When JavaScript calls `parameters.set(stringId, value)`:
 
 1. The runtime updates its local cache immediately
-2. Posts a `{type: "parameter:set", id, value}` message via `WKScriptMessageHandler`
+2. Posts a `{type: "parameter:set", id, value, seq}` message via `WKScriptMessageHandler`. `seq` numbers the sets of the page
 3. The format wrapper hands the message to its `EditorSync`, which reads the messages of the page for every format and calls `ParameterStore::set_normalized()` on the parameter
 4. The wrapper tells the host through its `HostEdits`: `IComponentHandler::performEdit()` (VST3) or the equivalent AU host notification
-5. The editor sync sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParameters`, so the display text updates without waiting for the next poll tick
+5. The editor sync sends the parameter's authoritative normalized value, plain value and display text straight back through `_onParameters`, so the display text updates without waiting for the next poll tick. The answer carries the `seq` of the set back. When the page has sent a newer set of the same parameter since (a drag sends many), the runtime ignores the older answer, so that it cannot put an older value back while the newer set is on its way. Changes of the poll tick carry no `seq` and always count
 
 `beginEdit` and `endEdit` follow the same path, posting `parameter:begin` and `parameter:end` messages that map to the host's automation gesture APIs. The editor sync notes each gesture the host was told about and that has not ended. When the editor closes or the page loads again before the end arrives (the window closed during a drag or a scroll), it ends the gesture in the host through `HostEdits`, so the host never keeps a parameter touched.
 
 `noteOn`, `noteOff` and `allNotesOff` post `{type: "note:on", note, velocity, channel}`, `note:off` and `note:all-off`. The editor sync puts them into the plugin's `EditorNotes`, which the format wrapper's render takes into the MIDI input of the next block (see [Notes for the Processor](#notes-for-the-processor)). It notes whether the page started a note. When the page goes away, it ends them with the gestures, also when the editor closes without a word from the wrapper.
 
-When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value}`. The editor sync decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
+When JavaScript calls `state.set(path, value)`, the runtime updates its value and its listeners, then posts `{type: "state:set", id: path, value, seq}`. The editor sync decodes the value into the Rust type of the field and sets it, then answers through `_onState` with the value in effect and the `seq` of the set. As for a parameter, the runtime ignores an answer to a set older than the newest one of the same field. A host learns about the change as described in [Telling the host](REFERENCE.md#state-beyond-parameters).
 
 ## Packages for the Web UI
 

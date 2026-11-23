@@ -12,9 +12,16 @@ use serde_json::Value;
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum PageMessage {
-    /// The page set a parameter to a normalized value.
+    /// The page set a parameter to a normalized value. `seq` numbers the
+    /// sets of the page; the answer carries it back, so that the page can
+    /// tell the answer to an older set from the answer to its newest.
     #[serde(rename = "parameter:set")]
-    SetParameter { id: ParameterId, value: f64 },
+    SetParameter {
+        id: ParameterId,
+        value: f64,
+        #[serde(default)]
+        seq: Option<u64>,
+    },
 
     /// The page began a gesture on a parameter: a drag or a scroll.
     #[serde(rename = "parameter:begin")]
@@ -25,13 +32,15 @@ pub(crate) enum PageMessage {
     EndGesture { id: ParameterId },
 
     /// The page set a `State` field, known by its path. A value the page
-    /// left out is `null`.
+    /// left out is `null`. `seq` as for a parameter.
     #[serde(rename = "state:set")]
     SetState {
         #[serde(rename = "id")]
         path: String,
         #[serde(default)]
         value: Value,
+        #[serde(default)]
+        seq: Option<u64>,
     },
 
     /// A call of `__BEAMER__.invoke()`. The answer settles the promise
@@ -111,8 +120,8 @@ mod tests {
     #[test]
     fn test_messages_of_the_runtime_are_read() {
         assert_eq!(
-            parse(r#"{"type":"parameter:set","id":7,"value":0.25}"#),
-            Some(PageMessage::SetParameter { id: 7, value: 0.25 })
+            parse(r#"{"type":"parameter:set","id":7,"value":0.25,"seq":4}"#),
+            Some(PageMessage::SetParameter { id: 7, value: 0.25, seq: Some(4) })
         );
         assert_eq!(
             parse(r#"{"type":"parameter:begin","id":7}"#),
@@ -123,8 +132,8 @@ mod tests {
             Some(PageMessage::EndGesture { id: 7 })
         );
         assert_eq!(
-            parse(r#"{"type":"state:set","id":"layer/zoom","value":[1,2]}"#),
-            Some(PageMessage::SetState { path: String::from("layer/zoom"), value: json!([1, 2]) })
+            parse(r#"{"type":"state:set","id":"layer/zoom","value":[1,2],"seq":5}"#),
+            Some(PageMessage::SetState { path: String::from("layer/zoom"), value: json!([1, 2]), seq: Some(5) })
         );
         assert_eq!(
             parse(r#"{"type":"invoke","method":"getInfo","args":[1,"a"],"callId":3}"#),
@@ -153,7 +162,11 @@ mod tests {
     fn test_parts_the_page_left_out_are_null_or_empty() {
         assert_eq!(
             parse(r#"{"type":"state:set","id":"zoom"}"#),
-            Some(PageMessage::SetState { path: String::from("zoom"), value: Value::Null })
+            Some(PageMessage::SetState { path: String::from("zoom"), value: Value::Null, seq: None })
+        );
+        assert_eq!(
+            parse(r#"{"type":"parameter:set","id":7,"value":0.25}"#),
+            Some(PageMessage::SetParameter { id: 7, value: 0.25, seq: None })
         );
         assert_eq!(
             parse(r#"{"type":"invoke","method":"getInfo","callId":1}"#),

@@ -14,6 +14,24 @@
   var valueListeners = Object.create(null);
   var invokeCallbacks = Object.create(null);
   var nextCallId = 0;
+  // The number of the last set the page sent, of any parameter or State
+  // field. Each set carries the next one and the plugin's answer carries
+  // it back.
+  var nextSetSeq = 0;
+  // The number of the newest set the page sent, by parameter id and by
+  // State path. An answer to an older set than the newest one of the same
+  // parameter or field comes too late and is ignored, so that it cannot
+  // put an older value back while the newer set is on its way; the answer
+  // to the newest set follows. Changes the plugin sends of its own carry
+  // no number and always count.
+  var sentParameterSeq = Object.create(null);
+  var sentStateSeq = Object.create(null);
+
+  // Whether an answer to set `seq` comes after a newer set of the same key.
+  function isLate(sent, key, seq) {
+    return seq !== undefined && sent[key] !== undefined && seq < sent[key];
+  }
+
   var readyResolve;
   var readyPromise = new Promise(function(r) { readyResolve = r; });
 
@@ -139,12 +157,24 @@
         var p = parameterMap[stringId];
         return p ? p.displayText : "";
       },
+      // Set a normalized value. Listeners hear of it at once; the plugin
+      // answers with the value in effect and its display text. A value
+      // that is not a finite number is refused with a warning: the plugin
+      // could not read it and would not answer.
       set: function(stringId, value) {
         var p = parameterMap[stringId];
         if (!p) return;
+        if (typeof value !== "number" || !isFinite(value)) {
+          console.warn("Beamer: parameter " + stringId + " needs a finite number, not", value);
+          return;
+        }
+        var changed = p.value !== value;
         p.value = value;
         p.info.value = value;
-        post({type:"parameter:set", id:p.id, value:value});
+        var seq = ++nextSetSeq;
+        sentParameterSeq[p.id] = seq;
+        if (changed) p.listeners.forEach(function(cb) { notify(cb, value); });
+        post({type:"parameter:set", id:p.id, value:value, seq:seq});
       },
       beginEdit: function(stringId) {
         var p = parameterMap[stringId];
@@ -183,7 +213,9 @@
         // null and so does NaN.
         var plain = JSON.parse(JSON.stringify(value === undefined ? null : value));
         applyState(path, plain);
-        post({type:"state:set", id:path, value:plain});
+        var seq = ++nextSetSeq;
+        sentStateSeq[path] = seq;
+        post({type:"state:set", id:path, value:plain, seq:seq});
       },
       on: function(path, cb) {
         return subscribe(stateMap, pendingStateSubs, path, cb);
@@ -285,14 +317,18 @@
       readyResolve();
     },
 
-    _onState: function(changed) {
-      for (var path in changed) applyState(path, changed[path]);
+    // `seq` is the number of the set an answer answers, undefined for a
+    // change the plugin sends of its own.
+    _onState: function(changed, seq) {
+      for (var path in changed) {
+        if (!isLate(sentStateSeq, path, seq)) applyState(path, changed[path]);
+      }
     },
 
-    _onParameters: function(changed) {
+    _onParameters: function(changed, seq) {
       for (var id in changed) {
         var entry = parameterById[id];
-        if (entry) {
+        if (entry && !isLate(sentParameterSeq, id, seq)) {
           var tuple = changed[id];
           entry.value = tuple[0];
           entry.plainValue = tuple[1];

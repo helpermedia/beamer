@@ -247,12 +247,12 @@ impl EditorSync {
     /// message of the runtime is logged and changes nothing.
     pub fn handle_message(&mut self, json: &[u8], host: &mut dyn HostEdits) -> Option<String> {
         match PageMessage::parse(json)? {
-            PageMessage::SetParameter { id, value } => {
+            PageMessage::SetParameter { id, value, seq } => {
                 self.model.parameter_store().set_normalized(id, value);
                 host.set_parameter(id, value);
                 // Answer with the value in effect at once, so that the
                 // display text follows without waiting for the next frame.
-                Some(self.parameter_script(id))
+                Some(self.parameter_script(id, seq))
             }
             PageMessage::BeginGesture { id } => {
                 // The sync ends it if the page goes away first.
@@ -266,7 +266,7 @@ impl EditorSync {
                 host.end_gesture(id);
                 None
             }
-            PageMessage::SetState { path, value } => self.state_script(&path, &value),
+            PageMessage::SetState { path, value, seq } => self.state_script(&path, &value, seq),
             PageMessage::Invoke { method, args, call_id } => {
                 let result = self.invoke(&method, &args);
                 Some(result_script(call_id, result))
@@ -370,7 +370,9 @@ impl EditorSync {
     /// Built after the value was stored and the host was told, which can
     /// change the value (an Audio Unit host rounds it to 32 bits). The
     /// value counts as sent, so the next frame does not send it again.
-    fn parameter_script(&mut self, id: ParameterId) -> String {
+    /// That also holds when the page ignores the answer as late: the
+    /// answer to its newer set follows.
+    fn parameter_script(&mut self, id: ParameterId, seq: Option<u64>) -> String {
         let parameters = self.model.parameter_store();
         let value = parameters.get_normalized(id);
         if let Some((_, last)) = self.last_values.iter_mut().find(|(known, _)| *known == id) {
@@ -379,7 +381,8 @@ impl EditorSync {
 
         let mut script = String::from("window.__BEAMER__._onParameters({");
         write_parameter(&mut script, parameters, id, value);
-        script.push_str("});");
+        script.push('}');
+        push_seq(&mut script, seq);
         script
     }
 
@@ -399,7 +402,7 @@ impl EditorSync {
     /// A value that does not fit the type of the field leaves the field as
     /// it is and is logged; the answer then corrects the web UI. Returns
     /// `None` for a path that names no field.
-    fn state_script(&mut self, path: &str, value: &Value) -> Option<String> {
+    fn state_script(&mut self, path: &str, value: &Value, seq: Option<u64>) -> Option<String> {
         let json = serde_json::to_vec(value).ok()?;
         let mut answer = None;
         let generations = &mut self.state_generations;
@@ -416,7 +419,8 @@ impl EditorSync {
                 generations.insert(path.to_string(), current.0);
                 let mut script = String::from("window.__BEAMER__._onState({");
                 push_entry(&mut script, path, &current.1);
-                script.push_str("});");
+                script.push('}');
+                push_seq(&mut script, seq);
                 answer = Some(script);
             }
         });
@@ -452,6 +456,19 @@ impl EditorSync {
             generations.insert(path.to_string(), generation);
             send(path, &json);
         });
+    }
+}
+
+/// End the call of an answer: with the number of the set it answers, so
+/// that the runtime ignores the answer when the page has sent a newer set
+/// of the same parameter or field since. An answer without a number (to a
+/// message that carried none) is always taken.
+fn push_seq(script: &mut String, seq: Option<u64>) {
+    match seq {
+        Some(seq) => {
+            let _ = write!(script, ",{seq});");
+        }
+        None => script.push_str(");"),
     }
 }
 
@@ -879,8 +896,8 @@ mod tests {
         parameters.set_normalized(10, 0.25);
         parameters.set_normalized(10, 0.3);
         assert_eq!(
-            sync.parameter_script(10),
-            "window.__BEAMER__._onParameters({10:[0.3,0.6,\"say \\\"0.3\\\" \\\\ now\"]});"
+            sync.parameter_script(10, Some(7)),
+            "window.__BEAMER__._onParameters({10:[0.3,0.6,\"say \\\"0.3\\\" \\\\ now\"]},7);"
         );
         assert_eq!(sync.frame_script(), None);
     }
@@ -912,7 +929,7 @@ mod tests {
     fn test_answer_for_an_unknown_parameter_does_not_panic() {
         let (_parameters, mut sync) = sync();
         assert_eq!(
-            sync.parameter_script(99),
+            sync.parameter_script(99, None),
             "window.__BEAMER__._onParameters({99:[0.0,0.0,\"0\"]});"
         );
     }
@@ -1083,8 +1100,8 @@ mod tests {
         let mut host = RecordingHost::default();
 
         assert_eq!(
-            message(&mut sync, &mut host, r#"{"type":"state:set","id":"zoom","value":200}"#).as_deref(),
-            Some("window.__BEAMER__._onState({\"zoom\":200});")
+            message(&mut sync, &mut host, r#"{"type":"state:set","id":"zoom","value":200,"seq":3}"#).as_deref(),
+            Some("window.__BEAMER__._onState({\"zoom\":200},3);")
         );
         assert!(host.calls.is_empty());
         assert_eq!(*states.zoom.get(), 200);
@@ -1100,11 +1117,11 @@ mod tests {
 
         // The field stays as it is. The answer tells the web UI.
         assert_eq!(
-            sync.state_script("zoom", &serde_json::json!("big")).as_deref(),
+            sync.state_script("zoom", &serde_json::json!("big"), None).as_deref(),
             Some("window.__BEAMER__._onState({\"zoom\":120});")
         );
         assert_eq!(*states.zoom.get(), 120);
-        assert_eq!(sync.state_script("nothing", &serde_json::json!(1)), None);
+        assert_eq!(sync.state_script("nothing", &serde_json::json!(1), None), None);
     }
 
     #[test]
@@ -1112,7 +1129,7 @@ mod tests {
         let (states, mut sync) = state_sync();
         sync.init_script("vst3");
 
-        sync.state_script("zoom", &serde_json::json!(200));
+        sync.state_script("zoom", &serde_json::json!(200), None);
         // A host thread sets the field before the next frame.
         states.zoom.set(300);
         assert_eq!(
