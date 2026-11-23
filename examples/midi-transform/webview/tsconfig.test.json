@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["bun", "vite/client"]
+  },
+  // With src: the tests reach model-types.ts, whose augmentation of
+  // beamer-api needs a file of the project that imports beamer-api.
+  "include": ["src", "test"]
+}

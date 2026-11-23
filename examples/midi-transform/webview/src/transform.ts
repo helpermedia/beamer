@@ -28,7 +28,6 @@ export interface NoteSettings {
   transpose: number;
   inputNote: number;
   outputNote: number;
-  velocityScale: number;
 }
 
 // The CC settings as plain values.

@@ -16,7 +16,11 @@
 //! - `EnumParameter` for discrete choices (transform modes)
 //! - `IntParameter` for note/CC number selection
 //! - `BoolParameter` for enable toggles
-//! - `FloatParameter` for velocity/value scaling
+//! - `FloatParameter` for CC value scaling
+//! - A `State<Curve>` for the velocity curve: points the user places in
+//!   the editor, saved with the plugin state and read by the audio thread
+//!   without a lock. A group holds it next to the parameter that turns it
+//!   on.
 //! - `process_midi()` for MIDI-only processing
 //! - MIDI event modification with the `with()` method
 //! - Held-note tracking, so a note-off ends the note its note-on started
@@ -25,7 +29,7 @@
 //!   `Config.toml`), since the settings apply to each note
 //! - `kind = "note_number"` for note numbers shown as names ("C3"), named
 //!   by `middle_c` in `Config.toml`
-//! - `kind = "percent"` for the scales
+//! - `kind = "percent"` for the CC scale
 //! - A stream sender from the audio thread that sends every note and CC as
 //!   it came in and went out, for the editor
 //!
@@ -47,11 +51,14 @@
 //! beamer-controls and beamer-react. bun and Vite build it into
 //! `webview/dist/`, which the export macro embeds. It draws the note map
 //! and the CC curve from the parameters, with the same rules as
-//! [`MidiTransformProcessor`]. The audio thread sends what only it knows:
-//! the notes and CCs that pass through, which light up in the displays.
+//! [`MidiTransformProcessor`]. The velocity curve has a tab of its own. It
+//! is a `State`: the editor shows it and sets it as a whole when the user
+//! moves, adds or removes a point. The audio thread sends what only it
+//! knows: the notes and CCs that pass through, which light up in the
+//! displays.
 
 use beamer::prelude::*;
-use beamer::serde::Serialize;
+use beamer::serde::{Deserialize, Serialize};
 
 // =============================================================================
 // Enum Types for Parameter Choices
@@ -62,23 +69,23 @@ use beamer::serde::Serialize;
 /// Demonstrates `#[derive(EnumParameter)]` with custom display names.
 #[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum NoteTransformMode {
-    /// Pass notes through with optional velocity scaling
+    /// Pass notes through unchanged.
     #[default]
     #[name = "Through"]
     Through,
-    /// Transpose all notes by semitones
+    /// Transpose all notes by semitones.
     #[name = "Transpose"]
     Transpose,
-    /// Shift notes up one octave (+12 semitones)
+    /// Shift notes up one octave (+12 semitones).
     #[name = "Octave Up"]
     OctaveUp,
-    /// Shift notes down one octave (-12 semitones)
+    /// Shift notes down one octave (-12 semitones).
     #[name = "Octave Down"]
     OctaveDown,
-    /// Remap a specific note to another note
+    /// Remap a specific note to another note.
     #[name = "Remap Note"]
     Remap,
-    /// Invert pitch around middle C (note 60)
+    /// Invert pitch around middle C (note 60).
     #[name = "Invert"]
     Invert,
 }
@@ -86,20 +93,20 @@ pub enum NoteTransformMode {
 /// CC transformation mode.
 #[derive(Copy, Clone, PartialEq, EnumParameter)]
 pub enum CcTransformMode {
-    /// Pass CC through unchanged
+    /// Pass CC through unchanged.
     #[default]
     #[name = "Through"]
     Through,
-    /// Remap CC number (CC X → CC Y)
+    /// Remap CC number (CC X to CC Y).
     #[name = "Remap CC"]
     Remap,
-    /// Scale CC value
+    /// Scale CC value.
     #[name = "Scale"]
     Scale,
-    /// Invert CC value (127 - value)
+    /// Invert CC value (127 - value).
     #[name = "Invert"]
     Invert,
-    /// Remap and scale CC
+    /// Remap and scale CC.
     #[name = "Remap + Scale"]
     RemapAndScale,
 }
@@ -118,29 +125,42 @@ pub enum CcTransformMode {
 /// again in the CC group.
 #[beamer::group]
 pub struct NoteTransformGroup {
-    /// Enable note transformation
+    /// Enable note transformation.
     #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
 
-    /// Transformation mode
+    /// Transformation mode.
     #[parameter(id = "mode", name = "Mode")]
     pub mode: EnumParameter<NoteTransformMode>,
 
-    /// Transpose amount in semitones (-24 to +24)
+    /// Transpose amount in semitones (-24 to +24).
     #[parameter(id = "transpose", name = "Transpose", default = 0, range = -24..=24, kind = "semitones")]
     pub transpose: IntParameter,
 
-    /// Input note for remap mode (0-127)
+    /// Input note for remap mode (0-127).
     #[parameter(id = "input", name = "Input Note", default = 60, range = 0..=127, kind = "note_number")]
     pub input_note: IntParameter,
 
-    /// Output note for remap mode (0-127)
+    /// Output note for remap mode (0-127).
     #[parameter(id = "output", name = "Output Note", default = 60, range = 0..=127, kind = "note_number")]
     pub output_note: IntParameter,
+}
 
-    /// Velocity scale (0% to 200%)
-    #[parameter(id = "velocity", name = "Velocity", default = 1.0, range = 0.0..=2.0, kind = "percent")]
-    pub velocity_scale: FloatParameter,
+/// The velocity curve and its switch.
+///
+/// A nested group that appears as "Velocity" in the DAW. Its switch is a
+/// parameter, so a host can automate it; the curve is a `State`, saved
+/// with the parameters as `velocity/curve`.
+#[beamer::group]
+pub struct VelocityGroup {
+    /// Whether note-ons go through the curve. On by default: the curve
+    /// starts as a straight line, which changes nothing.
+    #[parameter(id = "enabled", name = "Enabled", default = true)]
+    pub enabled: BoolParameter,
+
+    /// The velocity of a note-on in and out, both from 0.0 to 1.0.
+    #[state(id = "curve")]
+    pub curve: State<Curve>,
 }
 
 /// CC transformation settings.
@@ -149,23 +169,23 @@ pub struct NoteTransformGroup {
 /// Uses **declarative parameter definition** - no manual Default impl needed!
 #[beamer::group]
 pub struct CcTransformGroup {
-    /// Enable CC transformation
+    /// Enable CC transformation.
     #[parameter(id = "enabled", name = "Enabled", default = true)]
     pub enabled: BoolParameter,
 
-    /// Transformation mode
+    /// Transformation mode.
     #[parameter(id = "mode", name = "Mode")]
     pub mode: EnumParameter<CcTransformMode>,
 
-    /// Input CC number (0-127) - Default: Mod wheel (CC 1)
+    /// Input CC number (0-127). Default: Mod wheel (CC 1).
     #[parameter(id = "input", name = "Input CC", default = 1, range = 0..=127)]
     pub input_cc: IntParameter,
 
-    /// Output CC number (0-127) - Default: Expression (CC 11)
+    /// Output CC number (0-127). Default: Expression (CC 11).
     #[parameter(id = "output", name = "Output CC", default = 11, range = 0..=127)]
     pub output_cc: IntParameter,
 
-    /// Value scale (0% to 200%)
+    /// Value scale (0% to 200%).
     #[parameter(id = "scale", name = "Scale", default = 1.0, range = 0.0..=2.0, kind = "percent")]
     pub value_scale: FloatParameter,
 }
@@ -173,6 +193,18 @@ pub struct CcTransformGroup {
 // =============================================================================
 // Model
 // =============================================================================
+
+/// The tab the editor shows: notes and CCs, or the velocity curve. A
+/// setting of the editor, not a parameter: a host does not automate it. It
+/// is saved with the project, so the editor opens on the tab it was left
+/// on.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TypeScript)]
+#[serde(crate = "beamer::serde", rename_all = "snake_case")]
+pub enum Tab {
+    #[default]
+    NotesAndCcs,
+    Velocity,
+}
 
 /// MIDI Transform model: everything the plugin knows, shared by the host
 /// and the audio thread for the life of the instance.
@@ -182,17 +214,26 @@ pub struct CcTransformGroup {
 #[beamer::export]
 #[beamer::model]
 pub struct MidiTransformModel {
-    /// Global bypass - uses the special `bypass` attribute
+    /// Global bypass - uses the special `bypass` attribute.
     #[parameter(id = "bypass", bypass)]
     pub bypass: BoolParameter,
 
-    /// Note transformation settings (nested group)
+    /// Note transformation settings (nested group).
     #[nested(group = "Note Transform")]
     pub note: NoteTransformGroup,
 
-    /// CC transformation settings (nested group)
+    /// The velocity curve (nested group).
+    #[nested(group = "Velocity")]
+    pub velocity: VelocityGroup,
+
+    /// CC transformation settings (nested group).
     #[nested(group = "CC Transform")]
     pub cc: CcTransformGroup,
+
+    /// The tab the editor shows. The editor reads and sets it; the
+    /// processor never does.
+    #[state(id = "tab")]
+    pub tab: State<Tab>,
 
     /// Every note and CC as it came in and went out, sent from the audio
     /// thread.
@@ -217,6 +258,7 @@ impl Model for MidiTransformModel {
         MidiTransformProcessor {
             transformed_sender: self.transformed.sender(TRANSFORMED_CAPACITY),
             pressed_sender: self.pressed.sender(0),
+            velocity_curve: self.velocity.curve.reader(),
             model: self,
             held_notes: [[None; 128]; 16],
             pressed_keys: [0; 16],
@@ -268,6 +310,11 @@ pub enum Transformed {
 /// Notes Off.
 const ENDS_NOTES: [u8; 2] = [120, 123];
 
+/// The softest velocity the curve sends a note-on out with: 1 of 127. A
+/// note-on has a velocity above 0, so a curve that reaches 0 sends this
+/// one, the same in every plugin format.
+const MIN_VELOCITY: f32 = 1.0 / 127.0;
+
 /// Room for the events of two ticks of the editor (a tick is about 16 ms),
 /// more than a player or a sequence sends.
 const TRANSFORMED_CAPACITY: usize = 1024;
@@ -282,6 +329,11 @@ const TRANSFORMED_CAPACITY: usize = 1024;
 /// Created by `MidiTransformModel::prepare()`.
 pub struct MidiTransformProcessor {
     model: Arc<MidiTransformModel>,
+
+    /// The velocity curve as the editor last set it. Updated once per
+    /// `process_midi()` call, so that every note of a block takes the same
+    /// curve.
+    velocity_curve: HandoverReader<Curve>,
 
     /// The pitch each held note was sent out with, by channel and incoming
     /// pitch (`None` when the note was filtered out). A note-off goes to
@@ -350,7 +402,7 @@ impl MidiTransformProcessor {
     ///
     /// # Returns
     /// * `Some(pitch)` - Transformed pitch within valid MIDI range
-    /// * `None` - Pitch out of range (note should be filtered)
+    /// * `None` - Pitch out of range (note should be filtered).
     fn transform_pitch(&self, pitch: u8) -> Option<u8> {
         if !self.model.note.enabled.get() {
             return Some(pitch);
@@ -376,13 +428,13 @@ impl MidiTransformProcessor {
             }
 
             NoteTransformMode::Invert => {
-                // Invert around middle C (60)
-                // Examples: 60→60, 61→59, 72→48, 48→72
+                // Invert around middle C (60).
+                // Examples: 60 stays 60, 61 becomes 59, 72 becomes 48, 48 becomes 72.
                 60 + (60 - pitch as i16)
             }
         };
 
-        // Clamp to valid MIDI range, return None if out of range
+        // Clamp to valid MIDI range, return None if out of range.
         if (0..=127).contains(&new_pitch) {
             Some(new_pitch as u8)
         } else {
@@ -390,22 +442,18 @@ impl MidiTransformProcessor {
         }
     }
 
-    /// Transform a velocity value based on current settings.
-    ///
-    /// Applies velocity scaling: `output = input * scale`
-    ///
-    /// # Arguments
-    /// * `velocity` - Input velocity (0.0-1.0)
-    ///
-    /// # Returns
-    /// Scaled velocity, clamped to 0.0-1.0
+    /// The velocity a note-on goes out with: its velocity (0.0 to 1.0)
+    /// through the velocity curve while the curve is on. Independent of the
+    /// note transformation. A curve that lowers a velocity takes it down to
+    /// `MIN_VELOCITY` at most; a velocity that came in softer stays as it
+    /// is, so the default straight line changes nothing.
     fn transform_velocity(&self, velocity: f32) -> f32 {
-        if !self.model.note.enabled.get() {
+        if !self.model.velocity.enabled.get() {
             return velocity;
         }
 
-        let scale = self.model.note.velocity_scale.get() as f32;
-        (velocity * scale).clamp(0.0, 1.0)
+        let curved = self.velocity_curve.current().value_at(velocity as f64) as f32;
+        curved.max(MIN_VELOCITY.min(velocity))
     }
 
     /// Transform a CC number based on current settings.
@@ -418,7 +466,7 @@ impl MidiTransformProcessor {
     ///
     /// # Returns
     /// * `Some(cc)` - Output CC number (possibly remapped)
-    /// * `None` - CC should be filtered (not currently used)
+    /// * `None` - CC should be filtered (not currently used).
     fn transform_cc_number(&self, cc: u8) -> Option<u8> {
         if !self.model.cc.enabled.get() {
             return Some(cc);
@@ -455,18 +503,19 @@ impl MidiTransformProcessor {
     /// * `value` - Input CC value (0.0-1.0)
     ///
     /// # Returns
-    /// Transformed CC value, clamped to 0.0-1.0
+    /// Transformed CC value, clamped to 0.0-1.0.
     fn transform_cc_value(&self, cc: u8, value: f64) -> f64 {
         if !self.model.cc.enabled.get() {
             return value;
         }
 
         // Only transform if this is the targeted CC (for remap modes)
-        // or if we're in a mode that affects all CCs
+        // or if we're in a mode that affects all CCs.
         let should_transform = match self.model.cc.mode.get() {
             CcTransformMode::Through => false,
             CcTransformMode::Scale | CcTransformMode::Invert => true,
-            CcTransformMode::Remap => false, // Remap only changes number, not value
+            // Remap only changes the number, not the value.
+            CcTransformMode::Remap => false,
             CcTransformMode::RemapAndScale => {
                 cc == self.model.cc.input_cc.get() as u8
             }
@@ -518,6 +567,8 @@ impl Processor for MidiTransformProcessor {
 
     fn process_midi(&mut self, input: &[MidiEvent], output: &mut MidiBuffer) {
         let bypassed = self.model.bypass.get();
+        // Take a new curve from the editor, if there is one.
+        self.velocity_curve.latest();
 
         for event in input {
             match &event.event {
@@ -538,7 +589,7 @@ impl Processor for MidiTransformProcessor {
 
                     // If transform_pitch returns None, the note is filtered out.
                     if let Some(new_pitch) = new_pitch {
-                        // Use with() to preserve sample_offset, struct update for the rest
+                        // Use with() to preserve sample_offset, struct update for the rest.
                         output.push(event.with(MidiEventKind::NoteOn(NoteOn {
                             pitch: new_pitch,
                             velocity: new_velocity,
@@ -564,15 +615,11 @@ impl Processor for MidiTransformProcessor {
                     // The pitch the note-on went out with, not the one the
                     // current settings give. Nothing to end for a note that
                     // was filtered out.
+                    // The release velocity passes unchanged: the curve
+                    // shapes how hard a note starts.
                     if let Some(new_pitch) = self.held_note(note_off.channel, note_off.pitch).take() {
-                        let new_velocity = if bypassed {
-                            note_off.velocity
-                        } else {
-                            self.transform_velocity(note_off.velocity)
-                        };
                         output.push(event.with(MidiEventKind::NoteOff(NoteOff {
                             pitch: new_pitch,
-                            velocity: new_velocity,
                             ..*note_off
                         })));
                     }
@@ -633,7 +680,7 @@ impl Processor for MidiTransformProcessor {
                     })));
                 }
 
-                // Pass through other events unchanged
+                // Pass through other events unchanged.
                 _ => {
                     output.push(*event);
                 }
@@ -761,6 +808,87 @@ mod tests {
         assert_eq!(run(&mut processor, &[note_on(60)]), [(true, 60)]);
         model.bypass.set(false);
         assert_eq!(run(&mut processor, &[note_off(60)]), [(false, 60)]);
+    }
+
+    /// The velocities of the notes the processor sends out for `input`.
+    fn velocities(processor: &mut MidiTransformProcessor, input: &[MidiEvent]) -> Vec<f32> {
+        let mut output = MidiBuffer::new_boxed(0);
+        processor.process_midi(input, &mut output);
+        output
+            .iter()
+            .filter_map(|event| match &event.event {
+                MidiEventKind::NoteOn(note) => Some(note.velocity),
+                MidiEventKind::NoteOff(note) => Some(note.velocity),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A linear curve that halves every velocity.
+    fn halving() -> Curve {
+        Curve::new(CurveShape::Linear, vec![CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 0.5)])
+            .expect("valid points")
+    }
+
+    #[test]
+    fn test_velocity_passes_unchanged_by_default() {
+        let model = Arc::new(MidiTransformModel::default());
+        let mut processor = Arc::clone(&model).prepare(());
+        assert_eq!(velocities(&mut processor, &[note_on(60)]), [0.8]);
+    }
+
+    #[test]
+    fn test_velocity_curve_shapes_note_ons() {
+        let model = Arc::new(MidiTransformModel::default());
+        let mut processor = Arc::clone(&model).prepare(());
+
+        // A curve set while the processor runs applies from its next block.
+        model.velocity.curve.set(halving());
+        let release = MidiEvent::note_off(0, 0, 60, 0.6, -1, 0.0);
+        let out = velocities(&mut processor, &[note_on(60), release]);
+        assert!((out[0] - 0.4).abs() < 1e-6, "{out:?}");
+        // The release velocity passes unchanged.
+        assert_eq!(out[1], 0.6);
+
+        // The curve does not depend on the note transformation.
+        model.note.enabled.set(false);
+        assert!((velocities(&mut processor, &[note_on(60)])[0] - 0.4).abs() < 1e-6);
+
+        // With the curve off or while bypassed the curve is left out.
+        model.velocity.enabled.set(false);
+        assert_eq!(velocities(&mut processor, &[note_on(62)]), [0.8]);
+        model.velocity.enabled.set(true);
+        model.bypass.set(true);
+        assert_eq!(velocities(&mut processor, &[note_on(62)]), [0.8]);
+    }
+
+    #[test]
+    fn test_a_curve_at_zero_sends_the_softest_velocity() {
+        let model = Arc::new(MidiTransformModel::default());
+        let mut processor = Arc::clone(&model).prepare(());
+        let silent = Curve::new(CurveShape::Linear, vec![CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 0.0)])
+            .expect("valid points");
+        model.velocity.curve.set(silent);
+        assert_eq!(velocities(&mut processor, &[note_on(60)]), [MIN_VELOCITY]);
+    }
+
+    #[test]
+    fn test_the_default_curve_keeps_the_softest_velocities() {
+        let model = Arc::new(MidiTransformModel::default());
+        let mut processor = Arc::clone(&model).prepare(());
+        let soft = MidiEvent::note_on(0, 0, 60, 0.004, -1, 0.0, 0);
+        assert_eq!(velocities(&mut processor, &[soft]), [0.004]);
+    }
+
+    #[test]
+    fn test_velocity_curve_is_saved_with_the_state() {
+        let model = MidiTransformModel::default();
+        model.velocity.curve.set(halving());
+        let saved = model.save_state();
+
+        let loaded = MidiTransformModel::default();
+        loaded.load_state(&saved).expect("the saved state loads");
+        assert_eq!(*loaded.velocity.curve.get(), halving());
     }
 
     #[test]

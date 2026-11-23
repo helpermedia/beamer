@@ -334,10 +334,17 @@ MIDI effect that transforms notes and CC messages, with an editor in React.
 | **Transpose** | Semitones to shift (-24 to +24), only for Transpose mode |
 | **Input Note** | Source note for Remap mode, shown as its name (C3 is 60) |
 | **Output Note** | Target note for Remap mode, shown as its name |
-| **Velocity** | Velocity scaling (0% to 200%). 100% = no change |
+
+**Velocity Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| **Enabled** | Toggle the velocity curve on/off, independent of note processing |
+
+The **velocity curve** itself is not a parameter but a curve of points, saved with the project: it maps the velocity of each note-on in to out. It starts as a straight line, which changes nothing. Where the curve lowers a note below velocity 1, the note goes out at 1, as a note-on needs a velocity above 0. Release velocities pass unchanged.
 
 **Note Modes:**
-- **Through** - Pass notes unchanged (with optional velocity scaling)
+- **Through** - Pass notes unchanged
 - **Transpose** - Shift all notes by semitones
 - **Octave Up/Down** - Shift all notes by one octave
 - **Remap Note** - Change one specific note to another (e.g., kick on C1 to D1)
@@ -366,7 +373,7 @@ A **Bypass** parameter passes all MIDI through unchanged.
 
 <p><img src="../docs/screenshots/midi-transform.png" alt="The editor of MIDI Transform" width="760"></p>
 
-A bar with the plugin's name and the Beamer logo, then a section for notes and one for CCs, each with its switch and its modes. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Dials the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The editor scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
+A bar with the plugin's name, two tabs and the Beamer logo. The Notes & CCs tab has a section for notes and one for CCs, each with its power button, its title and its modes. A power button carries a power symbol that is blue while it is on. The title beside it says what it turns on. The note map shows all 128 notes twice, what comes in above and what goes out below, with a line from every C to where it goes out: blue where the settings move it, plus the remapped note in Remap mode. Incoming notes that would leave the MIDI range are dark, as they are filtered out. The notes that pass light up on both keyboards with a line of their own. The CC display draws the values in and out, blue where the mode changes them, with the last CC as a dot. Dials the mode does not use turn gray but still work, so a setting can be made ahead. Small tables show the last note and the last CC as they came in and went out, CCs with their names (1 Mod Wheel, 11 Expression). While the plugin is bypassed the map and the curve turn gray, but the notes and CCs that pass stay lit: they go straight through. When the host stops calling the plugin (a power button, an FX switch) with keys down, the keys go out after a moment, as no note-off can pass. The Velocity tab shows the velocity curve large, with its points to drag: a click adds a point, a double click, an Option/Alt click or a Cmd/Ctrl click removes one, the arrow keys move the focused point and Delete removes it. Beside it are the curve's power button, the choice of a smooth or a linear curve, the values of the point in hand, a reset and the last note, which also shows as a dot on the curve. The editor remembers its tab with the project, scales with its window and has the look of the Beamer brand. Built with React, Vite and Tailwind.
 
 **Demonstrates:**
 - `()` setup: a MIDI transformer needs nothing from the audio setup
@@ -374,7 +381,9 @@ A bar with the plugin's name and the Beamer logo, then a section for notes and o
 - `EnumParameter` for discrete choices
 - `IntParameter` for note/CC selection, `kind = "note_number"` to show note numbers as names ("C3") and read typed names back, with `middle_c` in `Config.toml` and `noteName()` from beamer-api in the editor
 - `BoolParameter` for enable toggles
-- `FloatParameter` for velocity and value scaling, as percentages (`kind = "percent"`)
+- `FloatParameter` for value scaling, as a percentage (`kind = "percent"`)
+- `State<Curve>` for the velocity curve: a curve of points through beamer-core's `Curve`, set as a whole by the editor and read on the audio thread without a lock, with the same maths in the editor so that it draws what the processor plays. It sits in a group with the parameter that turns it on, so a `State` and a parameter share a path (`velocity/curve`, `velocity/enabled`)
+- A `State` field for the editor's tab, saved with the project
 - `process_midi()` for MIDI processing
 - MIDI event modification with the `with()` method
 - Held-note tracking, so a note-off ends the note its note-on started when the settings change while the note is held

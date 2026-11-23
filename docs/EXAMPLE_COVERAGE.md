@@ -2,7 +2,7 @@
 
 **Purpose:** This document tracks which framework features are tested by example plugins and provides a roadmap for comprehensive feature coverage. Examples serve as both documentation and integration tests - implementing features in examples helps discover bugs early.
 
-**Last Updated:** 2026-11-21
+**Last Updated:** 2026-11-22
 **Current Examples:** gain, compressor, equalizer, delay, synthesizer, midi-transform, drum-synth, webview-demo, tuner
 
 ---
@@ -30,7 +30,8 @@
 | | Pan Formatter | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Stereo position ("L 30", "C", "R 30") via kind = "pan": the pan (WebView Demo), the balance of each drum (drum-synth) |
 | | bypass attribute | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Special bypass parameter marker |
 | | Factory Presets | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Presets in code: sparse (Delay), full with `reset_parameters()` (Synthesizer) |
-| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Saved state beyond parameters: read on the audio thread (pan law), a setting of the editor (the drum synth's tab) |
+| | State field (`#[state]`) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | Saved state beyond parameters: read on the audio thread (pan law, the velocity curve), a setting of the editor (the tabs of the drum synth and midi-transform) |
+| | `Curve` (points the user places) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | The velocity curve in a `State<Curve>`, smooth or linear, edited in the editor and read on the audio thread (midi-transform) |
 | | Hand-written `Default` (`no_default`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Covered by docs (REFERENCE.md) and tests; no example needs it |
 | **Processing** | f32 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f32 |
 | | f64 processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All support f64 |
@@ -77,7 +78,7 @@
 | | editor_background_color | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | Prevents white flash |
 | | Embedded assets | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | webview/dist/ via custom URL scheme, plain webview/ (delay) |
 | | Parameter sync (JS ↔ Rust) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | __BEAMER__.parameters, synced at 60 Hz |
-| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | __BEAMER__.state (pan law), `stateField` as a Svelte store (the tab the drum synth's editor shows) |
+| | State in the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | __BEAMER__.state (pan law), `stateField` as a Svelte store (the tab the drum synth's editor shows), `useStateField` in React (midi-transform's tab and velocity curve) |
 | | Notes from the web UI | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | The drum synth's pads play their drum with `playNote`, which reaches `midi_input()` |
 | | DAW undo grouping | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | beginEdit/endEdit |
 | | Plain HTML web UI (no build step) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | webview/ without package.json |
